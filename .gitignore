@@ -1,1 +1,6 @@
 .idea/
+.mypy_cache/
+.pytest_cache/
+src/region_set_profiler/__pycache__/
+src/region_set_profiler.egg-info/
+tests/.pytest_cache/
