@@ -12,7 +12,7 @@ import pytest
 from pandas.api.types import CategoricalDtype
 from pandas.util.testing import assert_frame_equal
 
-from region_set_profiler.enrichment import CoverageStats
+import region_set_profiler as rsp
 # %%
 
 
@@ -75,6 +75,7 @@ expected_coverage_df = read_csv_with_padding(
         dtype={'Chromosome': CategoricalDtype(
                 categories=['1', '10', '11', '2'], ordered=True),
             'Start': 'i8', 'End': 'i8', 'database1': 'i8', 'database2': 'i8'})
+expected_coverage_df.columns.name = 'dataset'
 
 
 @pytest.mark.parametrize('experiment_as_df', [True, False])
@@ -87,7 +88,7 @@ def test_coverage_stats_compute(experiment_as_df: bool) -> None:
                               )
     else:
         regions = experiment_bed
-    coverage_stats = CoverageStats(bed_files=[database1_bed, database2_bed_gz],
+    coverage_stats = rsp.CoverageStats(bed_files=[database1_bed, database2_bed_gz],
                                    regions=regions,  # holds either a str or a dataframe
                                    tmpdir=tmpdir.name,
                                    prefix='remove')
@@ -106,8 +107,9 @@ def test_coverage_stats_aggregate(str_cluster_ids: bool) -> None:
             3          , 0         , 1
             4          , 2         , 0
             """, index_col=[0], dtype={'database1': 'i8', 'database2': 'i8'})
+    expected_hits.columns.name = 'dataset'
 
-    coverage_stats = CoverageStats(bed_files=[database1_bed, database2_bed_gz],
+    coverage_stats = rsp.CoverageStats(bed_files=[database1_bed, database2_bed_gz],
                                    regions=experiment_bed,
                                    tmpdir=tmpdir.name,
                                    prefix='remove')
@@ -122,4 +124,74 @@ def test_coverage_stats_aggregate(str_cluster_ids: bool) -> None:
 
     cluster_counts = coverage_stats.aggregate(cluster_ids=cluster_ids)
     assert_frame_equal(cluster_counts.hits, expected_hits)
+
+@pytest.fixture()
+def cluster_counts():
+    hits = read_csv_with_padding(
+            """
+            cluster_id , database1 , database2
+            1          , 0         , 1
+            2          , 2         , 0
+            3          , 0         , 1
+            4          , 2         , 0
+            """, index_col=[0], dtype={'database1': 'i8', 'database2': 'i8'})
+    cluster_sizes = pd.Series([2, 2, 3, 3],
+                              index=pd.Index([1, 2, 3, 4], name='cluster_id'),
+                              name='Frequency')
+    cluster_counts = rsp.ClusterCounts(hits, cluster_sizes)
+    return cluster_counts
+
+class TestClusterCounts:
+
+    def test_ratio(self, cluster_counts):
+        expected_ratio = read_csv_with_padding(
+                f"""
+                cluster_id , database1 , database2
+                1          , 0         , 0.5
+                2          , 1         , 0
+                3          , 0         , {1/3}
+                4          , {2/3}       , 0
+                """, index_col=[0], dtype={'database1': 'f8', 'database2': 'f8'})
+        expected_ratio.columns.name = 'dataset'
+        assert_frame_equal(expected_ratio, cluster_counts.ratio)
+
+
+    def test_enrichment_chi_square(self, cluster_counts):
+        # This test result will be calculated with an alternative method, e.g.
+        # rpy2, in the future
+        expected_test_result = read_csv_with_padding(
+                f"""
+                dataset   , pvalues  , mlog10_pvalues , qvalues  , mlog10_qvalues
+                database1 , 0.065142 , 1.186138       , 0.130284 , 0.885108
+                database2 , 0.438813 , 0.357721       , 0.438813 , 0.357721
+                """, index_col=[0], dtype={'database1': 'f8', 'database2': 'f8'})
+        test_result = cluster_counts.test_for_enrichment('chi_square')
+        assert_frame_equal(test_result, expected_test_result)
+
+    def test_enrichment_fisher(self, cluster_counts):
+        # This test result will be calculated with an alternative method, e.g.
+        # rpy2, in the future
+        hits = read_csv_with_padding(
+                """
+                cluster_id , database1 , database2
+                1          , 1000      , 500
+                2          , 500       , 540
+                3          , 1000      , 980
+                4          , 500       , 1020
+                """, index_col=[0], dtype={'database1': 'i8', 'database2': 'i8'})
+        cluster_sizes = pd.Series([2000, 2000, 4000, 4000],
+                                  index=pd.Index([1, 2, 3, 4], name='cluster_id'),
+                                  name='Frequency')
+        cluster_counts = rsp.ClusterCounts(hits, cluster_sizes)
+        test_result = cluster_counts.test_for_enrichment('fisher')
+        expected_test_result = read_csv_with_padding(
+            f"""
+            dataset   , pvalues , mlog10_pvalues , qvalues , mlog10_qvalues
+            database1 , 0.00001 , 5.000004       , 0.00001  , 5.000004
+            database2 , 0.00001 , 5.000004       , 0.00001  , 5.000004
+            """, index_col=[0], dtype={'database1': 'f8', 'database2': 'f8'})
+        assert_frame_equal(test_result, expected_test_result)
+
+
+
 

@@ -5,7 +5,7 @@ import subprocess
 from io import StringIO
 from time import time
 from tempfile import TemporaryDirectory
-from typing import Union, List, Optional, Iterable
+from typing import Union, List, Optional, Iterable, Any, Dict
 
 from scipy.stats import chi2_contingency
 from statsmodels.stats.multitest import multipletests
@@ -58,13 +58,23 @@ class CoverageStats:
             assert self.regions['Chromosome'].dtype.name == 'category'
 
 
+    @staticmethod
+    def _assert_coverage_df_contract(coverage_df) -> None:
+        assert coverage_df.index.names[0:3] == ['Chromosome', 'Start', 'End']
+        assert coverage_df.index.is_lexsorted()
+        assert is_int64_dtype(coverage_df.values)
+        assert coverage_df.columns.name == 'dataset'
+        assert not coverage_df.isna().any(axis=None)
+
+
     def compute(self) -> None:
-        """Calculate coverage matrix input_regions x database files
+        """Calculate coverage matrix (input_regions x database files)
 
         Uses bedtools annotate -counts. May be extended to also deal with
         fractional overlaps in the future.
         """
-        print('Calculating coverage stats')
+
+        print('Start calculation of coverage stats')
         names = [re.sub(r'\.bed.*$', '', os.path.basename(x))
                  for x in self.bed_files]
 
@@ -76,29 +86,14 @@ class CoverageStats:
         else:
             regions_fp = self.regions
 
-        if isinstance(self.regions, pd.DataFrame):
-            chromosome_dtype = CategoricalDtype(
-                    categories=np.unique(self.regions['Chromosome']),
-                    ordered=True)
-        elif self.chromosomes:
-            chromosome_dtype = CategoricalDtype(categories=self.chromosomes,
-                                                ordered=True)
-        else:
-            chromosome_dtype = str
+        chromosome_dtype = self._infer_chrom_dtype()
 
+        print('Search for overlaps in database files')
         t1 = time()
-        proc = subprocess.run(['bedtools', 'annotate', '-counts',
-                               '-i', regions_fp,
-                               '-files'] + self.bed_files,
-                              stdout=subprocess.PIPE, encoding='utf8',
-                              check=True)
-        dtype = {curr_name: 'i8' for curr_name in names}
-        dtype.update({'Chromosome': chromosome_dtype,
-                      'Start': 'i8', 'End': 'i8'})
-        coverage_df = pd.read_csv(StringIO(proc.stdout),
-                                  sep='\t',
-                                  names=['Chromosome', 'Start', 'End'] + names,
-                                  dtype=dtype, header=None)
+        coverage_df = self._retrieve_coverage_with_bedtools(
+                chromosome_dtype, names, regions_fp)
+        print('Done. Time: ', time() - t1)
+
         if chromosome_dtype == str:
             coverage_df['Chromosome'] = pd.Categorical(
                     coverage_df['Chromosome'], ordered=True,
@@ -117,21 +112,42 @@ class CoverageStats:
         # sorting order of bedtools annotate is not guaranteed, due to this bug:
         # https://github.com/arq5x/bedtools2/issues/622
         coverage_df.sort_index(inplace=True)
-        assert not coverage_df.isna().any(axis=None)
+        coverage_df.columns.name = 'dataset'
+        self._assert_coverage_df_contract(coverage_df)
         self.coverage_df = coverage_df
-        print('Took: ', time() - t1)
 
-        # for computing fraction plus counts
-        # names =  np.repeat([Path(x).stem for x in files], 2).tolist()
-        # stat = np.tile(['count', 'fraction'], len(files)).tolist()
-        # columns = pd.MultiIndex.from_arrays([names, stat])
-        # coverage_df.columns = columns
-        # counts = coverage_df.loc[:, idxs[:, 'count']].copy()
-        # counts.columns = counts.columns.droplevel(1)
 
+    def _infer_chrom_dtype(self):
+        """Infer best chromosome dtype for reading in the bedtools results"""
+        if isinstance(self.regions, pd.DataFrame):
+            chromosome_dtype = CategoricalDtype(
+                    categories=np.unique(self.regions['Chromosome']),
+                    ordered=True)
+        elif self.chromosomes:
+            chromosome_dtype = CategoricalDtype(categories=self.chromosomes,
+                                                ordered=True)
+        else:
+            chromosome_dtype = str
+        return chromosome_dtype
+
+
+    def _retrieve_coverage_with_bedtools(self, chromosome_dtype, names, regions_fp):
+        proc = subprocess.run(['bedtools', 'annotate', '-counts',
+                               '-i', regions_fp,
+                               '-files'] + self.bed_files,
+                              stdout=subprocess.PIPE, encoding='utf8',
+                              check=True)
+        dtype = {curr_name: 'i8' for curr_name in names}
+        dtype.update({'Chromosome': chromosome_dtype,
+                      'Start':      'i8', 'End': 'i8'})
+        coverage_df = pd.read_csv(StringIO(proc.stdout),
+                                  sep='\t',
+                                  names=['Chromosome', 'Start', 'End'] + names,
+                                  dtype=dtype, header=None)
+        return coverage_df
 
     def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) -> 'ClusterCounts':
-        """Aggregate coverage per cluster
+        """Aggregate hits per cluster
 
         Args:
             cluster_ids: index must be sorted and
@@ -149,69 +165,97 @@ class CoverageStats:
         if has_low_n_counts.any():
             print('WARNING: the following BED files have less than {T} overlaps: ')
             print(cluster_counts.sum(axis=0).loc[has_low_n_counts])
-        return ClusterCounts(cluster_counts, ids=cluster_ids)
+        cluster_sizes = cluster_ids.value_counts().sort_index()
+        cluster_sizes.index.name = 'cluster_id'
+        cluster_sizes.name = 'Frequency'
+        return ClusterCounts(cluster_counts, cluster_sizes=cluster_sizes)
         # pseudo-count
         # if cluster_counts.eq(0).any().any():
         # cluster_counts += 1
 
+
 class ClusterCounts:
-    def __init__(self, hits: pd.DataFrame, ids: pd.Series) -> None:
-        """Number of hits per cluster for different database files
+    def __init__(self, hits: pd.DataFrame, cluster_sizes: pd.Series) -> None:
+        """Cluster hit stats: (cluster_id vs database files)
 
         Args:
-            hits: dataframe clusters x database files
-            ids: cluster ids for the original input regions,
-                index must be grange columns
+            hits: dataframe cluster_id x database files, index: cluster_id, sorted
+            cluster_sizes: total number of elements in each cluster,
+                index: cluster_id, sorted
         """
         assert hits.index.name == 'cluster_id'
-        assert hits.index.is_monotonic
+        assert hits.index.is_monotonic_increasing
+        hits.columns.name = 'dataset'
         assert is_int64_dtype(hits.values)
         self.hits = hits
 
-        assert ids.index.names == ['Chromosome', 'Start', 'End']
-        assert ids.index.get_level_values('Chromosome').dtype.name == 'category'
-        assert ids.index.is_lexsorted()
-        ids.name = 'cluster_ids'
-        self.ids = ids
+        assert cluster_sizes.index.name == 'cluster_id'
+        assert cluster_sizes.index.is_monotonic_increasing
+        self.cluster_sizes = cluster_sizes
 
-        self._cluster_sizes: Optional[pd.Series] = None
+        # Attributes to cache property values
         self._ratio: Optional[pd.DataFrame] = None
 
 
     @property
-    def cluster_sizes(self) -> pd.Series:
-        if self._cluster_sizes is None:
-            self._cluster_sizes = self.ids.value_counts().sort_index()
-        return self._cluster_sizes
-
-    @property
     def ratio(self) -> pd.DataFrame:
+        """Percentage of cluster elements overlapping with a database element"""
         if self._ratio is None:
             self._ratio = self.hits.divide(self.cluster_sizes, axis=0)
         return self._ratio
 
-    def test_for_enrichment(self, method: str = 'fisher') -> pd.DataFrame:
+    def test_for_enrichment(self, method: str,
+                            test_args: Optional[Dict[str, Any]] = None)\
+            -> pd.DataFrame:
+        """Enrichment test per database file
+
+        Args:
+            method: 'fisher' or 'chi_square'
+            test_args: update the args passed to the test function:
+                - fisher args:
+                    simulate_pval=True
+                    replicate=int(1e5)
+                    workspace=500000
+                    seed=123
+                - chi_square args: None
+
+        Returns:
+            p-value, q-value and other stats per database file
+        """
+        if test_args is None:
+            test_args = {}
         if method == 'fisher':
+            base_test_args =  dict(
+                    simulate_pval=True, replicate=int(1e5),
+                    workspace=500000, seed=123)
+            base_test_args.update(test_args)
             fn = lambda ser: fisher_exact(
-                [ser.values, (self.cluster_sizes - ser).values],
-                simulate_pval=True, replicate=int(1e5),
-                workspace=500000, seed=123)
+                    [ser.values, (self.cluster_sizes - ser).values],
+                    **base_test_args)
+            # This correction function is inappropriate for discrete p-values
+            # will be changed in the future
             corr_fn = lambda pvalues: multipletests(pvalues, method='fdr_bh')[1]
         elif method == 'chi_square':
+            base_test_args = test_args
             fn = lambda ser: \
-            chi2_contingency([ser.values, (self.cluster_sizes - ser).values])[1]
+                chi2_contingency([ser.values, (self.cluster_sizes - ser).values],
+                                 **base_test_args)[1]
             corr_fn = lambda pvalues: multipletests(pvalues, method='fdr_bh')[1]
         else:
             raise ValueError('Unknown test method')
 
         pvalues = self.hits.agg(fn, axis=0)
+        pvalues += 1e-50
+        mlog10_pvalues = -np.log10(pvalues)
+        assert np.all(np.isfinite(mlog10_pvalues))
         qvalues = corr_fn(pvalues)
         qvalues += 1e-50
-        log_qvalues = -np.log10(qvalues)
-        assert np.all(np.isfinite(log_qvalues))
+        mlog10_qvalues = -np.log10(qvalues)
+        assert np.all(np.isfinite(mlog10_qvalues))
         return pd.DataFrame(dict(pvalues=pvalues,
+                                 mlog10_pvalues=mlog10_pvalues,
                                  qvalues=qvalues,
-                                 log_qvalues=log_qvalues),
+                                 mlog10_qvalues=mlog10_qvalues),
                             index=self.hits.columns)
 
     # def calculate_log_odds(self):
