@@ -9,4 +9,16 @@ setup(
         package_dir={'': 'src'},
         packages=['region_set_profiler'],
         python_requires='>=3.6',
+        install_requires=[
+            'scipy',
+            'statsmodels',
+            'FisherExact',
+            'numpy',
+            'pandas>=0.23.4',
+        ],
+        extras_require={
+            'dev': [
+                'pytest',
+            ]
+        }
 )
