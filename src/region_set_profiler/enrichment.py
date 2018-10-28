@@ -1,11 +1,14 @@
 # %%
+import math
 import os
 import re
 import subprocess
+import more_itertools
 from io import StringIO
 from time import time
 from tempfile import TemporaryDirectory
 from typing import Union, List, Optional, Iterable, Any, Dict
+from joblib import Parallel, delayed
 
 from scipy.stats import chi2_contingency
 from statsmodels.stats.multitest import multipletests
@@ -42,6 +45,7 @@ class CoverageStats:
                  tmpdir: str = '/tmp',
                  prefix: str = 'remove',
                  chromosomes: Optional[List[str]] = None,
+                 header: Optional[Union[int, List[int]]]=0,
                  ) -> None:
         self.bed_files = list(bed_files)
         self.regions = regions
@@ -49,6 +53,7 @@ class CoverageStats:
         self.prefix = prefix
         self.chromosomes = chromosomes
         self.coverage_df: Optional[pd.DataFrame] = None
+        self.header = header
 
         self._assert_regions_contract()
 
@@ -67,7 +72,7 @@ class CoverageStats:
         assert not coverage_df.isna().any(axis=None)
 
 
-    def compute(self) -> None:
+    def compute(self, cores) -> None:
         """Calculate coverage matrix (input_regions x database files)
 
         Uses bedtools annotate -counts. May be extended to also deal with
@@ -78,72 +83,71 @@ class CoverageStats:
         names = [re.sub(r'\.bed.*$', '', os.path.basename(x))
                  for x in self.bed_files]
 
+        # we may need to add or remove prefixes for a given database
+
         if isinstance(self.regions, pd.DataFrame):
-            tmpdir = TemporaryDirectory(dir=self.tmpdir)
-            regions_fp = tmpdir.name + '/experiment.bed'
-            self.regions.iloc[:, 0:3].to_csv(
-                    regions_fp, sep='\t', header=False, index=False)
+            query_regions_df = self.regions.copy(deep=True)
         else:
-            regions_fp = self.regions
+            if self.chromosomes:
+                chromosome_dtype = CategoricalDtype(categories=self.chromosomes,
+                                                    ordered=True)
+            else:
+                chromosome_dtype = str
+            query_regions_df = pd.read_csv(
+                    self.regions, sep='\t', header=self.header,
+                    dtype={'Chromosome': chromosome_dtype,
+                           'Start': 'i8',
+                           'End': 'i8'},
+                    usecols=[0, 1, 2],
+                    names=['Chromosome', 'Start', 'End']
+            )
 
-        chromosome_dtype = self._infer_chrom_dtype()
+            if chromosome_dtype == str:
+                query_regions_df['Chromosome'] = pd.Categorical(
+                        query_regions_df['Chromosome'], ordered=True,
+                        categories=np.unique(query_regions_df['Chromosome']))
 
+        orig_chrom_categories = query_regions_df['Chromosome'].cat.categories
+        if self.prefix == 'remove':
+            if orig_chrom_categories[0].startswith('chr'):
+                query_regions_df['Chromosome'].cat.rename_categories(
+                        [s.replace('chr', '') for s in orig_chrom_categories],
+                        inplace=True)
+        elif self.prefix == 'add':
+            if not orig_chrom_categories[0].startswith('chr'):
+                query_regions_df['Chromosome'].cat.rename_categories(
+                        ['chr' + s for s in orig_chrom_categories],
+                        inplace=True)
+        else:
+            raise NotImplementedError
+        tmpdir = TemporaryDirectory(dir=self.tmpdir)
+        regions_fp = tmpdir.name + '/experiment.bed'
+        query_regions_df.iloc[:, 0:3].to_csv(
+                regions_fp, sep='\t', header=False, index=False)
+
+
+        chromosome_dtype = query_regions_df['Chromosome'].dtype
         print('Search for overlaps in database files')
         t1 = time()
         coverage_df = self._retrieve_coverage_with_bedtools(
-                chromosome_dtype, names, regions_fp)
+                chromosome_dtype, names, regions_fp, cores, orig_chrom_categories)
         print('Done. Time: ', time() - t1)
 
-        if chromosome_dtype == str:
-            coverage_df['Chromosome'] = pd.Categorical(
-                    coverage_df['Chromosome'], ordered=True,
-                    categories=np.unique(coverage_df['Chromosome']))
-
-
-        chrom_categories = coverage_df['Chromosome'].cat.categories
-        if self.prefix == 'remove':
-            if chrom_categories[0].startswith('chr'):
-                coverage_df['Chromosome'].cat.set_categories(
-                        [s.replace('chr', '') for s in chrom_categories],
-                        inplace=True)
-        else:
-             raise NotImplementedError
-        coverage_df.set_index(['Chromosome', 'Start', 'End'], inplace=True)
-        # sorting order of bedtools annotate is not guaranteed, due to this bug:
-        # https://github.com/arq5x/bedtools2/issues/622
-        coverage_df.sort_index(inplace=True)
-        coverage_df.columns.name = 'dataset'
         self._assert_coverage_df_contract(coverage_df)
         self.coverage_df = coverage_df
 
 
-    def _infer_chrom_dtype(self):
-        """Infer best chromosome dtype for reading in the bedtools results"""
-        if isinstance(self.regions, pd.DataFrame):
-            chromosome_dtype = CategoricalDtype(
-                    categories=np.unique(self.regions['Chromosome']),
-                    ordered=True)
-        elif self.chromosomes:
-            chromosome_dtype = CategoricalDtype(categories=self.chromosomes,
-                                                ordered=True)
-        else:
-            chromosome_dtype = str
-        return chromosome_dtype
-
-
-    def _retrieve_coverage_with_bedtools(self, chromosome_dtype, names, regions_fp):
-        proc = subprocess.run(['bedtools', 'annotate', '-counts',
-                               '-i', regions_fp,
-                               '-files'] + self.bed_files,
-                              stdout=subprocess.PIPE, encoding='utf8',
-                              check=True)
-        dtype = {curr_name: 'i8' for curr_name in names}
-        dtype.update({'Chromosome': chromosome_dtype,
-                      'Start':      'i8', 'End': 'i8'})
-        coverage_df = pd.read_csv(StringIO(proc.stdout),
-                                  sep='\t',
-                                  names=['Chromosome', 'Start', 'End'] + names,
-                                  dtype=dtype, header=None)
+    def _retrieve_coverage_with_bedtools(self, chromosome_dtype, names, regions_fp, cores, orig_chrom_categories):
+        print(f'Running on {cores} cores')
+        chunk_size = int(np.ceil(len(self.bed_files) / cores))
+        bed_files_chunked = more_itertools.chunked(self.bed_files, chunk_size)
+        names_chunked = more_itertools.chunked(names, chunk_size)
+        chunk_dfs = Parallel(cores)(delayed(_run_bedtools_annotate)(
+                regions_fp=regions_fp, bed_files=bed_files_curr_chunk, names=names_curr_chunk,
+                chromosome_dtype=chromosome_dtype, orig_chrom_categories=orig_chrom_categories)
+                                    for bed_files_curr_chunk, names_curr_chunk in zip(
+                bed_files_chunked, names_chunked))
+        coverage_df = pd.concat(chunk_dfs, axis=1)
         return coverage_df
 
     def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) -> 'ClusterCounts':
@@ -195,6 +199,8 @@ class ClusterCounts:
 
         # Attributes to cache property values
         self._ratio: Optional[pd.DataFrame] = None
+        self._odds_ratio: Optional[pd.DataFrame] = None
+        self._normalized_ratio: Optional[pd.DataFrame] = None
 
 
     @property
@@ -203,6 +209,33 @@ class ClusterCounts:
         if self._ratio is None:
             self._ratio = self.hits.divide(self.cluster_sizes, axis=0)
         return self._ratio
+
+
+    @property
+    def normalized_ratio(self) -> pd.DataFrame:
+        """Percentage of cluster elements overlapping with a database element"""
+        if self._normalized_ratio is None:
+            self._normalized_ratio = self.ratio.divide(self.ratio.max(axis=0), axis=1)
+        return self._normalized_ratio
+
+
+    @property
+    def log_odds_ratio(self) -> pd.DataFrame:
+        """log10(odds ratio)
+
+        For each cluster, all regions not in the cluster are taken as background
+        regions.
+        """
+        if not self._odds_ratio:
+            pseudocount = 1
+            fg_and_hit = self.hits + pseudocount
+            fg_and_not_hit = -fg_and_hit.subtract(self.cluster_sizes, axis=0) + pseudocount
+            bg_and_hit = -fg_and_hit.subtract(self.hits.sum(axis=0), axis=1) + pseudocount
+            bg_sizes = self.cluster_sizes.sum() - self.cluster_sizes
+            bg_and_not_hit = -bg_and_hit.subtract(bg_sizes, axis=0) + pseudocount
+            self._odds_ratio = np.log2( (fg_and_hit / fg_and_not_hit) / (bg_and_hit / bg_and_not_hit) )
+        return self._odds_ratio
+
 
     def test_for_enrichment(self, method: str,
                             test_args: Optional[Dict[str, Any]] = None)\
@@ -258,15 +291,32 @@ class ClusterCounts:
                                  mlog10_qvalues=mlog10_qvalues),
                             index=self.hits.columns)
 
-    # def calculate_log_odds(self):
-    #     pseudocount = 1
-    #     fg_and_hit = cluster_hits + pseudocount
-    #     fg_and_not_hit = -fg_and_hit.subtract(cluster_size, axis=0) + pseudocount
-    #     bg_and_hit = -fg_and_hit.subtract(cluster_hits.sum(axis=0), axis=1) + pseudocount
-    #     bg_sizes = cluster_size.sum() - cluster_size
-    #     bg_and_not_hit = -bg_and_hit.subtract(bg_sizes, axis=0) + pseudocount
-    #
-    #     odds_ratio = np.log2( (fg_and_hit / fg_and_not_hit) / (bg_and_hit / bg_and_not_hit) )
-    #     odds_ratio.columns.name = 'Feature'
 
+def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str],
+       chromosome_dtype: CategoricalDtype, orig_chrom_categories: List[str]) -> pd.DataFrame:
+    """Run bedtools annotate to get region coverage"""
+    assert isinstance(chromosome_dtype, CategoricalDtype)
+    proc = subprocess.run(['bedtools', 'annotate', '-counts',
+                           '-i', regions_fp,
+                           '-files'] + bed_files,
+                          stdout=subprocess.PIPE, encoding='utf8',
+                          check=True)
+    print(proc.stdout)
+    dtype = {curr_name: 'i8' for curr_name in names}
+    dtype.update({'Chromosome': chromosome_dtype,
+                  'Start':      'i8', 'End': 'i8'})
+    coverage_df = pd.read_csv(StringIO(proc.stdout),
+                              sep='\t',
+                              names=['Chromosome', 'Start', 'End'] + names,
+                              dtype=dtype, header=None)
+
+    coverage_df['Chromosome'].cat.rename_categories(
+            orig_chrom_categories, inplace=True)
+
+    coverage_df.set_index(['Chromosome', 'Start', 'End'], inplace=True)
+    # sorting order of bedtools annotate is not guaranteed, due to this bug:
+    # https://github.com/arq5x/bedtools2/issues/622
+    coverage_df.sort_index(inplace=True)
+    coverage_df.columns.name = 'dataset'
+    return coverage_df
 

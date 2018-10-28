@@ -89,10 +89,10 @@ def test_coverage_stats_compute(experiment_as_df: bool) -> None:
     else:
         regions = experiment_bed
     coverage_stats = rsp.CoverageStats(bed_files=[database1_bed, database2_bed_gz],
-                                   regions=regions,  # holds either a str or a dataframe
-                                   tmpdir=tmpdir.name,
-                                   prefix='remove')
-    coverage_stats.compute()
+                                       regions=regions,  # holds either a str or a dataframe
+                                       tmpdir=tmpdir.name,
+                                       prefix='remove')
+    coverage_stats.compute(cores=2)
     assert_frame_equal(coverage_stats.coverage_df, expected_coverage_df)
 
 

@@ -15,6 +15,7 @@ setup(
             'FisherExact',
             'numpy',
             'pandas>=0.23.4',
+            'more_itertools',
         ],
         extras_require={
             'dev': [
