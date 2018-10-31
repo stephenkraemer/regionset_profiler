@@ -1,12 +1,14 @@
 # %%
-import math
+import gzip
 import os
 import re
 import subprocess
+from pathlib import Path
+
 import more_itertools
 from io import StringIO
 from time import time
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkstemp
 from typing import Union, List, Optional, Iterable, Any, Dict
 from joblib import Parallel, delayed
 
@@ -19,7 +21,7 @@ import pandas as pd
 from pandas.api.types import CategoricalDtype, is_int64_dtype
 # %%
 
-class CoverageStats:
+class OverlapStats:
     # noinspection PyUnresolvedReferences
     """Calculate coverage stats for the input regions
 
@@ -29,10 +31,6 @@ class CoverageStats:
         bed_files: iterable of BED-file paths. May be mix of any compressed
             filetypes supported by bedtools.
         regions: either path to BED file, or dataframe of regions
-        prefix: 'remove', 'add', 'auto'. In each case the first Chromosome
-            value will be checked to decide what to do. This means that this
-            functionality is not meant to deal with inconsistent chromosome
-            naming schemes. Currently, only 'remove' is implemented.
         tmpdir: will be used for creation of temporary results
         chromosomes: when given defines the order of the chromosome categorical
             and speeds up reading the data. Otherwise, categorical order will
@@ -43,14 +41,13 @@ class CoverageStats:
                  bed_files: Iterable[str],
                  regions: Union[str, pd.DataFrame],
                  tmpdir: str = '/tmp',
-                 prefix: str = 'remove',
                  chromosomes: Optional[List[str]] = None,
                  header: Optional[Union[int, List[int]]]=0,
                  ) -> None:
         self.bed_files = list(bed_files)
         self.regions = regions
-        self.tmpdir = tmpdir
-        self.prefix = prefix
+        self._tmpdir_obj = TemporaryDirectory(dir=tmpdir)
+        self.tmpdir = self._tmpdir_obj.name
         self.chromosomes = chromosomes
         self.coverage_df: Optional[pd.DataFrame] = None
         self.header = header
@@ -77,14 +74,79 @@ class CoverageStats:
 
         Uses bedtools annotate -counts. May be extended to also deal with
         fractional overlaps in the future.
+
+        Coverage can be > 1
         """
 
         print('Start calculation of coverage stats')
         names = [re.sub(r'\.bed.*$', '', os.path.basename(x))
                  for x in self.bed_files]
 
-        # we may need to add or remove prefixes for a given database
+        prefix_action = self._extract_prefix_action()
 
+        regions_fp, orig_chrom_categories, chromosome_dtype = (
+            self._prepare_data_for_bedtools_call(prefix_action))
+
+        print('Search for overlaps in database files')
+        t1 = time()
+        coverage_df = self._retrieve_coverage_with_bedtools(
+                chromosome_dtype, names, regions_fp, cores, orig_chrom_categories)
+        print('Done. Time: ', time() - t1)
+
+        self._assert_coverage_df_contract(coverage_df)
+        self.coverage_df = coverage_df
+
+
+    def _prepare_data_for_bedtools_call(self, prefix_action):
+
+        if prefix_action is None and isinstance(self.regions, pd.DataFrame):
+            regions_fp = self.tmpdir + '/experiment.bed'
+            self.regions.iloc[:, 0:3].to_csv(
+                    regions_fp, sep='\t', header=False, index=False)
+            orig_chrom_categories = None
+            chromosome_dtype = self.regions['Chromosome'].dtype
+            return regions_fp, orig_chrom_categories, chromosome_dtype
+
+        elif prefix_action is None and isinstance(self.regions, str):
+            regions_fp = self.regions
+            orig_chrom_categories = None
+            if self.chromosomes is not None:
+                chromosome_dtype = CategoricalDtype(categories=self.chromosomes,
+                                                    ordered=True)
+            else:
+                chromosome = pd.read_csv(
+                        self.regions, sep='\t', comment='#',
+                        usecols=[0], names=['Chromosome'], dtype=str)
+                chromosome_dtype = CategoricalDtype(chromosome.iloc[:, 0].unique(), ordered=True)
+            return regions_fp, orig_chrom_categories, chromosome_dtype
+
+        elif prefix_action is not None:
+            query_regions_df = self._get_query_regions_df()
+
+            orig_chrom_categories = query_regions_df['Chromosome'].cat.categories
+            if prefix_action == 'remove':
+                if orig_chrom_categories[0].startswith('chr'):
+                    query_regions_df['Chromosome'].cat.rename_categories(
+                            [s.replace('chr', '') for s in orig_chrom_categories],
+                            inplace=True)
+            elif prefix_action == 'add':
+                if not orig_chrom_categories[0].startswith('chr'):
+                    query_regions_df['Chromosome'].cat.rename_categories(
+                            ['chr' + s for s in orig_chrom_categories],
+                            inplace=True)
+            else:
+                raise ValueError()
+
+            regions_fp = self.tmpdir + '/experiment.bed'
+            query_regions_df.iloc[:, 0:3].to_csv(
+                    regions_fp, sep='\t', header=False, index=False)
+            chromosome_dtype = query_regions_df['Chromosome'].dtype
+            return regions_fp, orig_chrom_categories, chromosome_dtype
+
+        else:
+            raise ValueError()
+
+    def _get_query_regions_df(self):
         if isinstance(self.regions, pd.DataFrame):
             query_regions_df = self.regions.copy(deep=True)
         else:
@@ -96,46 +158,43 @@ class CoverageStats:
             query_regions_df = pd.read_csv(
                     self.regions, sep='\t', header=self.header,
                     dtype={'Chromosome': chromosome_dtype,
-                           'Start': 'i8',
-                           'End': 'i8'},
+                           'Start':      'i8',
+                           'End':        'i8'},
                     usecols=[0, 1, 2],
                     names=['Chromosome', 'Start', 'End']
             )
-
             if chromosome_dtype == str:
                 query_regions_df['Chromosome'] = pd.Categorical(
                         query_regions_df['Chromosome'], ordered=True,
                         categories=np.unique(query_regions_df['Chromosome']))
+        return query_regions_df
 
-        orig_chrom_categories = query_regions_df['Chromosome'].cat.categories
-        if self.prefix == 'remove':
-            if orig_chrom_categories[0].startswith('chr'):
-                query_regions_df['Chromosome'].cat.rename_categories(
-                        [s.replace('chr', '') for s in orig_chrom_categories],
-                        inplace=True)
-        elif self.prefix == 'add':
-            if not orig_chrom_categories[0].startswith('chr'):
-                query_regions_df['Chromosome'].cat.rename_categories(
-                        ['chr' + s for s in orig_chrom_categories],
-                        inplace=True)
+    def _extract_prefix_action(self):
+        def bed_has_prefix(fp):
+            if fp.endswith('.gz'):
+                fin = gzip.open(fp, 'rt')
+            else:
+                fin = open(fp)
+            for line in fin:
+                if not line.startswith('#'):
+                    has_prefix = line.startswith('chr')
+                    break
+            else:
+                raise ValueError()
+            return has_prefix
+
+        if isinstance(self.regions, pd.DataFrame):
+            exp_has_prefix = self.regions['Chromosome'].iloc[0].startswith('chr')
         else:
-            raise NotImplementedError
-        tmpdir = TemporaryDirectory(dir=self.tmpdir)
-        regions_fp = tmpdir.name + '/experiment.bed'
-        query_regions_df.iloc[:, 0:3].to_csv(
-                regions_fp, sep='\t', header=False, index=False)
-
-
-        chromosome_dtype = query_regions_df['Chromosome'].dtype
-        print('Search for overlaps in database files')
-        t1 = time()
-        coverage_df = self._retrieve_coverage_with_bedtools(
-                chromosome_dtype, names, regions_fp, cores, orig_chrom_categories)
-        print('Done. Time: ', time() - t1)
-
-        self._assert_coverage_df_contract(coverage_df)
-        self.coverage_df = coverage_df
-
+            exp_has_prefix = bed_has_prefix(self.regions)
+        database_has_prefix = bed_has_prefix(self.bed_files[0])
+        if exp_has_prefix and not database_has_prefix:
+            prefix_action = 'remove'
+        elif not exp_has_prefix and database_has_prefix:
+            prefix_action = 'add'
+        else:
+            prefix_action = None
+        return prefix_action
 
     def _retrieve_coverage_with_bedtools(self, chromosome_dtype, names, regions_fp, cores, orig_chrom_categories):
         print(f'Running on {cores} cores')
@@ -150,7 +209,8 @@ class CoverageStats:
         coverage_df = pd.concat(chunk_dfs, axis=1)
         return coverage_df
 
-    def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) -> 'ClusterCounts':
+    def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) \
+            -> 'ClusterOverlapStats':
         """Aggregate hits per cluster
 
         Args:
@@ -159,12 +219,15 @@ class CoverageStats:
             min_counts: a warning will be displayed if any feature has less counts
 
         Returns:
-            ClusterCounts given the aggregated counts clusters x database files
+            ClusterOverlapStats given the aggregated counts clusters x database files
+
+        Each overlap is only counted once, even if the coverage is > 1
         """
         assert self.coverage_df is not None
         assert self.coverage_df.index.equals(cluster_ids.index)
         cluster_ids.name = 'cluster_id'
-        cluster_counts = self.coverage_df.groupby(cluster_ids).sum()
+        bool_coverage_df = self.coverage_df.where(lambda df: df.le(1), 1)
+        cluster_counts = bool_coverage_df.groupby(cluster_ids).sum()
         has_low_n_counts = cluster_counts.sum(axis=0).lt(min_counts)
         if has_low_n_counts.any():
             print('WARNING: the following BED files have less than {T} overlaps: ')
@@ -172,13 +235,13 @@ class CoverageStats:
         cluster_sizes = cluster_ids.value_counts().sort_index()
         cluster_sizes.index.name = 'cluster_id'
         cluster_sizes.name = 'Frequency'
-        return ClusterCounts(cluster_counts, cluster_sizes=cluster_sizes)
+        return ClusterOverlapStats(cluster_counts, cluster_sizes=cluster_sizes)
         # pseudo-count
         # if cluster_counts.eq(0).any().any():
         # cluster_counts += 1
 
 
-class ClusterCounts:
+class ClusterOverlapStats:
     def __init__(self, hits: pd.DataFrame, cluster_sizes: pd.Series) -> None:
         """Cluster hit stats: (cluster_id vs database files)
 
@@ -245,7 +308,7 @@ class ClusterCounts:
         Args:
             method: 'fisher' or 'chi_square'
             test_args: update the args passed to the test function:
-                - fisher args:
+                - fisher args, e.g.
                     simulate_pval=True
                     replicate=int(1e5)
                     workspace=500000
@@ -301,7 +364,6 @@ def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str
                            '-files'] + bed_files,
                           stdout=subprocess.PIPE, encoding='utf8',
                           check=True)
-    print(proc.stdout)
     dtype = {curr_name: 'i8' for curr_name in names}
     dtype.update({'Chromosome': chromosome_dtype,
                   'Start':      'i8', 'End': 'i8'})
@@ -310,8 +372,9 @@ def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str
                               names=['Chromosome', 'Start', 'End'] + names,
                               dtype=dtype, header=None)
 
-    coverage_df['Chromosome'].cat.rename_categories(
-            orig_chrom_categories, inplace=True)
+    if orig_chrom_categories is not None:
+        coverage_df['Chromosome'].cat.rename_categories(
+                orig_chrom_categories, inplace=True)
 
     coverage_df.set_index(['Chromosome', 'Start', 'End'], inplace=True)
     # sorting order of bedtools annotate is not guaranteed, due to this bug:

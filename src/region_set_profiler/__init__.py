@@ -1,1 +1,1 @@
-from .enrichment import ClusterCounts, CoverageStats
+from .enrichment import ClusterOverlapStats, OverlapStats
