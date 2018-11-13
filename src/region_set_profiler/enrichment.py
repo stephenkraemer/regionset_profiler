@@ -38,7 +38,6 @@ class OverlapStats:
     """
 
     def __init__(self,
-                 bed_files: Iterable[str],
                  regions: Union[str, pd.DataFrame],
                  tmpdir: str = '/tmp',
                  chromosomes: Optional[List[str]] = None,
@@ -302,13 +301,14 @@ class ClusterOverlapStats:
         return self._odds_ratio
 
 
-    def test_for_enrichment(self, method: str,
+    def test_for_enrichment(self, method: str, cores: int = 1,
                             test_args: Optional[Dict[str, Any]] = None)\
             -> pd.DataFrame:
         """Enrichment test per database file
 
         Args:
             method: 'fisher' or 'chi_square'
+            cores: number of cores for parallel execution. Only used for fisher.
             test_args: update the args passed to the test function:
                 - fisher args, e.g.
                     simulate_pval=True
@@ -324,30 +324,35 @@ class ClusterOverlapStats:
             test_args = {}
         if method == 'fisher':
             base_test_args =  dict(
-                    simulate_pval=True, replicate=int(1e5),
-                    workspace=500000, seed=123)
+                    simulate_pval=True, replicate=int(1e7),
+                    workspace=100_000_000, seed=123)
             base_test_args.update(test_args)
-            fn = lambda ser: fisher_exact(
-                    [ser.values, (self.cluster_sizes - ser).values],
-                    **base_test_args)
-            # This correction function is inappropriate for discrete p-values
-            # will be changed in the future
+            slices = [slice(l[0], l[-1] + 1)
+                      for l in more_itertools.chunked(
+                        np.arange(self.hits.shape[1]), cores)]
+            print('Starting fisher test')
+            t1 = time()
+            pvalues_partial_dfs = Parallel(cores)(
+                    delayed(_run_fisher_exact_test_in_parallel_loop)
+                    (df=self.hits.iloc[:, curr_slice] ,
+                     cluster_sizes=self.cluster_sizes, test_args=base_test_args)
+                    for curr_slice in slices)
+            print('Took ', (time() - t1) / 60, ' min')
+            pvalues = pd.concat(pvalues_partial_dfs, axis=0).sort_index()
             corr_fn = lambda pvalues: multipletests(pvalues, method='fdr_bh')[1]
         elif method == 'chi_square':
-            base_test_args = test_args
             fn = lambda ser: \
-                chi2_contingency([ser.values, (self.cluster_sizes - ser).values],
-                                 **base_test_args)[1]
+                chi2_contingency([ser.values, (self.cluster_sizes - ser).values])[1]
+            pvalues = self.hits.agg(fn, axis=0)
+            pvalues += 1e-100
             corr_fn = lambda pvalues: multipletests(pvalues, method='fdr_bh')[1]
         else:
             raise ValueError('Unknown test method')
 
-        pvalues = self.hits.agg(fn, axis=0)
-        pvalues += 1e-50
         mlog10_pvalues = -np.log10(pvalues)
         assert np.all(np.isfinite(mlog10_pvalues))
         qvalues = corr_fn(pvalues)
-        qvalues += 1e-50
+        qvalues += 1e-100
         mlog10_qvalues = -np.log10(qvalues)
         assert np.all(np.isfinite(mlog10_qvalues))
         return pd.DataFrame(dict(pvalues=pvalues,
@@ -385,3 +390,9 @@ def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str
     coverage_df.columns.name = 'dataset'
     return coverage_df
 
+def _run_fisher_exact_test_in_parallel_loop(df, cluster_sizes, test_args):
+    fn = lambda ser: fisher_exact(
+            [ser.values, (cluster_sizes - ser).values],
+            **test_args)
+    pvalues = df.agg(fn, axis=0)
+    return pvalues

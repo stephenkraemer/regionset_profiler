@@ -155,6 +155,19 @@ def test_coverage_stats_compute(experiment_as_df, database_has_prefix,
     assert_frame_equal(coverage_stats.coverage_df, inner_expected_coverage_df)
 
 
+def test_overlap_stats_from_metadata_table():
+    metadata_table = pd.DataFrame({'name': ['db1', 'db2'],
+                                   'abspath': [database1_bed, database2_bed_gz]})
+    metadata_table.set_index('name', drop=False, inplace=True)
+    overlap_stats = rsp.OverlapStats(metadata_table=metadata_table,
+                                     regions=experiment_bed)
+    overlap_stats.compute(cores=1)
+    assert_frame_equal(overlap_stats.coverage_df,
+                       expected_coverage_df.rename(columns={'database1': 'db1',
+                                                            'database2': 'db2'}))
+
+
+
 @pytest.mark.parametrize('str_cluster_ids', [True, False])
 def test_coverage_stats_aggregate(str_cluster_ids: bool) -> None:
 
@@ -182,6 +195,28 @@ def test_coverage_stats_aggregate(str_cluster_ids: bool) -> None:
 
     cluster_counts = coverage_stats.aggregate(cluster_ids=cluster_ids)
     assert_frame_equal(cluster_counts.hits, expected_hits)
+
+def test_overlap_stats_subset_hits():
+    metadata_table = pd.DataFrame({'name': ['db1', 'db2'],
+                                   'abspath': [database1_bed, database2_bed_gz],
+                                   'use': [False, True]})
+    metadata_table.set_index('name', drop=False, inplace=True)
+    hits = read_csv_with_padding(
+            """
+            cluster_id , db1 , db2
+            1          , 0         , 1
+            2          , 2         , 0
+            3          , 0         , 1
+            4          , 2         , 0
+            """, index_col=[0], dtype={'database1': 'i8', 'database2': 'i8'})
+    cluster_overlap_stats = rsp.ClusterOverlapStats(
+            hits=hits,
+            cluster_sizes=pd.Series([4] * 4, index=pd.Index([1, 2, 3, 4], name='cluster_id')),
+            metadata_table=metadata_table)
+    new_cluster_overlap_stats = cluster_overlap_stats.subset_hits(
+            cluster_overlap_stats.metadata_table['use'])
+    assert_frame_equal(new_cluster_overlap_stats.hits,
+                       hits[['db2']])
 
 @pytest.fixture()
 def cluster_counts():
@@ -243,15 +278,15 @@ class TestClusterCounts:
         cluster_counts = rsp.ClusterOverlapStats(hits, cluster_sizes)
         test_result = cluster_counts.test_for_enrichment(
                 'fisher', test_args=dict(simulate_pval=True,
-                                         replicate=1_000_000,
+                                         replicate=10_000,
                                          workspace=10_000_000,
                                          seed=1))
         expected_test_result = read_csv_with_padding(
-            f"""
-            dataset   , pvalues , mlog10_pvalues , qvalues , mlog10_qvalues
-            database1 , 0.00001 , 5.000004       , 0.00001  , 5.000004
-            database2 , 0.00001 , 5.000004       , 0.00001  , 5.000004
-            """, index_col=[0], dtype={'database1': 'f8', 'database2': 'f8'})
+                f"""
+                dataset   , pvalues , mlog10_pvalues , qvalues , mlog10_qvalues
+                database1 , 1e-4 , 4.       , 1e-4  , 4.
+                database2 , 1e-4 , 4.       , 1e-4  , 4.
+                """, index_col=[0], dtype={'database1': 'f8', 'database2': 'f8'})
         assert_frame_equal(test_result, expected_test_result)
 
 
