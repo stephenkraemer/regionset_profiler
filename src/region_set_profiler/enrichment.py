@@ -1,4 +1,5 @@
 # %%
+from copy import copy
 import gzip
 import os
 import re
@@ -39,11 +40,30 @@ class OverlapStats:
 
     def __init__(self,
                  regions: Union[str, pd.DataFrame],
+                 bed_files: Optional[Iterable[str]]= None,
+                 metadata_table: Optional[Union[pd.DataFrame, str]] = None,
                  tmpdir: str = '/tmp',
                  chromosomes: Optional[List[str]] = None,
                  header: Optional[Union[int, List[int]]]=0,
                  ) -> None:
-        self.bed_files = list(bed_files)
+
+        if (bed_files is not None) + (metadata_table is not None) != 1:
+            raise ValueError('Specify one of [bed_files, metadata_table], '
+                             'but not both')
+        # metadata table has column name, which is duplicated as index
+        # and a column abspath to the bed file. Plus any other columns
+        if isinstance(metadata_table, str):
+            metadata_table = pd.read_csv(metadata_table, sep='\t', header=0)
+            metadata_table.set_index('name', drop=False, inplace=True)
+        if isinstance(metadata_table, pd.DataFrame):
+            assert metadata_table.columns.contains('name')
+            assert metadata_table.index.to_series().equals(metadata_table['name'])
+            assert metadata_table.columns.contains('abspath')
+        self.metadata_table = metadata_table
+        if metadata_table is not None:
+            self.bed_files = metadata_table['abspath']
+        else:
+            self.bed_files = list(bed_files)
         self.regions = regions
         self._tmpdir_obj = TemporaryDirectory(dir=tmpdir)
         self.tmpdir = self._tmpdir_obj.name
@@ -78,8 +98,11 @@ class OverlapStats:
         """
 
         print('Start calculation of coverage stats')
-        names = [re.sub(r'\.bed.*$', '', os.path.basename(x))
-                 for x in self.bed_files]
+        if self.metadata_table is not None:
+            names = self.metadata_table['name']
+        else:
+            names = [re.sub(r'\.bed.*$', '', os.path.basename(x))
+                     for x in self.bed_files]
 
         prefix_action = self._extract_prefix_action()
 
@@ -234,14 +257,16 @@ class OverlapStats:
         cluster_sizes = cluster_ids.value_counts().sort_index()
         cluster_sizes.index.name = 'cluster_id'
         cluster_sizes.name = 'Frequency'
-        return ClusterOverlapStats(cluster_counts, cluster_sizes=cluster_sizes)
+        return ClusterOverlapStats(cluster_counts, cluster_sizes=cluster_sizes,
+                                   metadata_table=self.metadata_table)
         # pseudo-count
         # if cluster_counts.eq(0).any().any():
         # cluster_counts += 1
 
 
 class ClusterOverlapStats:
-    def __init__(self, hits: pd.DataFrame, cluster_sizes: pd.Series) -> None:
+    def __init__(self, hits: pd.DataFrame, cluster_sizes: pd.Series,
+                 metadata_table: Optional[pd.DataFrame] = None) -> None:
         """Cluster hit stats: (cluster_id vs database files)
 
         Args:
@@ -253,16 +278,30 @@ class ClusterOverlapStats:
         assert hits.index.is_monotonic_increasing
         hits.columns.name = 'dataset'
         assert is_int64_dtype(hits.values)
-        self.hits = hits
+        self._hits = hits
 
         assert cluster_sizes.index.name == 'cluster_id'
         assert cluster_sizes.index.is_monotonic_increasing
         self.cluster_sizes = cluster_sizes
 
+        self.metadata_table = metadata_table
+
         # Attributes to cache property values
         self._ratio: Optional[pd.DataFrame] = None
         self._odds_ratio: Optional[pd.DataFrame] = None
         self._normalized_ratio: Optional[pd.DataFrame] = None
+
+
+    @property
+    def hits(self):
+        return self._hits
+
+
+    @hits.setter
+    def hits(self, new_hits):
+        self._hits = new_hits
+        if self.metadata_table is not None:
+            self.metadata_table = self.metadata_table.loc[new_hits.columns, :].copy()
 
 
     @property
@@ -300,6 +339,10 @@ class ClusterOverlapStats:
             self._odds_ratio = odds_ratio_arr
         return self._odds_ratio
 
+    def subset_hits(self, loc_arg) -> 'ClusterOverlapStats':
+        new_inst = copy(self)
+        new_inst.hits = self.hits.loc[:, loc_arg].copy()
+        return new_inst
 
     def test_for_enrichment(self, method: str, cores: int = 1,
                             test_args: Optional[Dict[str, Any]] = None)\
