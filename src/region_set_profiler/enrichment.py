@@ -289,14 +289,16 @@ class ClusterOverlapStats:
         For each cluster, all regions not in the cluster are taken as background
         regions.
         """
-        if not self._odds_ratio:
+        if self._odds_ratio is None:
             pseudocount = 1
             fg_and_hit = self.hits + pseudocount
             fg_and_not_hit = -fg_and_hit.subtract(self.cluster_sizes, axis=0) + pseudocount
             bg_and_hit = -fg_and_hit.subtract(self.hits.sum(axis=0), axis=1) + pseudocount
             bg_sizes = self.cluster_sizes.sum() - self.cluster_sizes
             bg_and_not_hit = -bg_and_hit.subtract(bg_sizes, axis=0) + pseudocount
-            self._odds_ratio = np.log2( (fg_and_hit / fg_and_not_hit) / (bg_and_hit / bg_and_not_hit) )
+            odds_ratio_arr = np.log2( (fg_and_hit / fg_and_not_hit) / (bg_and_hit / bg_and_not_hit) )
+            odds_ratio_arr[~np.isfinite(odds_ratio_arr)] = np.nan
+            self._odds_ratio = odds_ratio_arr
         return self._odds_ratio
 
 
