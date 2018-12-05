@@ -3,6 +3,7 @@ import gzip
 import os
 import re
 from io import StringIO
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from textwrap import dedent
 from typing import Optional, Any, List
@@ -22,13 +23,15 @@ def read_csv_with_padding(s: str, header: int = 0,
     s = dedent(re.sub(r' *, +', ',', s))
     return pd.read_csv(StringIO(s), header=header, index_col=index_col, sep=',', **kwargs)
 
-tmpdir = TemporaryDirectory()
-experiment_bed = os.path.join(tmpdir.name, 'exp.bed')
-experiment_bed_gz_prefix = os.path.join(tmpdir.name, 'exp-prefix.bed.gz')
-database1_bed = os.path.join(tmpdir.name, 'database1.bed')
-database1_bed_prefix = os.path.join(tmpdir.name, 'database1-prefix.bed')
-database2_bed_gz = os.path.join(tmpdir.name, 'database2.bed.gz')
-database2_bed_gz_prefix = os.path.join(tmpdir.name, 'database2-prefix.bed.gz')
+tmpdir_obj = TemporaryDirectory()
+tmpdir = tmpdir_obj.name
+
+experiment_bed = os.path.join(tmpdir_obj.name, 'exp.bed')
+experiment_bed_gz_prefix = os.path.join(tmpdir_obj.name, 'exp-prefix.bed.gz')
+database1_bed = os.path.join(tmpdir_obj.name, 'database1.bed')
+database1_bed_prefix = os.path.join(tmpdir_obj.name, 'database1-prefix.bed')
+database2_bed_gz = os.path.join(tmpdir_obj.name, 'database2.bed.gz')
+database2_bed_gz_prefix = os.path.join(tmpdir_obj.name, 'database2-prefix.bed.gz')
 
 with open(database1_bed, 'wt') as fout:
     fout.write(
@@ -140,7 +143,7 @@ def test_coverage_stats_compute(experiment_as_df, database_has_prefix,
 
     coverage_stats = rsp.OverlapStats(bed_files=curr_bed_files,
                                       regions=regions,  # holds either a str or a dataframe
-                                      tmpdir=tmpdir.name)
+                                      tmpdir=tmpdir_obj.name)
     coverage_stats.compute(cores=2)
     inner_expected_coverage_df = expected_coverage_df.copy()
     if exp_has_prefix:
@@ -183,7 +186,7 @@ def test_coverage_stats_aggregate(str_cluster_ids: bool) -> None:
 
     coverage_stats = rsp.OverlapStats(bed_files=[database1_bed, database2_bed_gz],
                                       regions=experiment_bed,
-                                      tmpdir=tmpdir.name)
+                                      tmpdir=tmpdir_obj.name)
     coverage_stats.coverage_df = expected_coverage_df
 
     # note that the data-order cluster ids are not sorted, but the expected
@@ -291,4 +294,28 @@ class TestClusterCounts:
 
 
 
-
+def test_gene_assignment_based_overlaps(tmpdir):
+    tmpdir = Path(tmpdir)
+    genesets = """\
+GenesetA\tDescription\tGeneC
+GenesetB\t\tGeneA\tGeneB\tGeneD
+"""
+    genesets_fp = tmpdir.joinpath('genesets.gmt')
+    genesets_fp.write_text(genesets)
+    # Any columns are allowed and will be copied
+    annotations = pd.DataFrame({
+        'region_id': range(5),
+        'Gene': ['GeneA', 'GeneB', None, 'GeneD', 'GeneC'],
+    })
+    expected_hits = pd.DataFrame({'GenesetA': [0, 0, 0, 0, 1],
+                                  'GenesetB': [1, 1, 0, 1, 0],
+                                  }, dtype='i8', index=annotations.index)
+    cluster_ids = pd.Series([1, 1, 1, 2, 2], index=expected_hits.index)
+    expected_cluster_hits = pd.DataFrame(
+            {'GenesetA': [0, 1], 'GenesetB': [2, 1]},
+            index=pd.Index([1, 2], name='cluster_id')).rename_axis('dataset', axis=1)
+    geneset_overlap_stats = rsp.GenesetOverlapStats(annotations, genesets_fp)
+    geneset_overlap_stats.compute()
+    assert_frame_equal(geneset_overlap_stats.coverage_df, expected_hits, check_names=False)
+    cluster_overlap_stats = geneset_overlap_stats.aggregate(cluster_ids, min_counts=0)
+    assert_frame_equal(cluster_overlap_stats.hits, expected_cluster_hits)

@@ -1,1 +1,1 @@
-from .enrichment import ClusterOverlapStats, OverlapStats
+from .enrichment import ClusterOverlapStats, OverlapStats, GenesetOverlapStats

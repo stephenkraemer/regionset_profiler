@@ -1,16 +1,16 @@
 # %%
+from abc import abstractmethod, ABC
 from copy import copy
 import gzip
 import os
 import re
 import subprocess
-from pathlib import Path
 
 import more_itertools
 from io import StringIO
 from time import time
-from tempfile import TemporaryDirectory, mkstemp
-from typing import Union, List, Optional, Iterable, Any, Dict
+from tempfile import TemporaryDirectory
+from typing import Union, List, Optional, Iterable, Any, Dict, Set
 from joblib import Parallel, delayed
 
 from scipy.stats import chi2_contingency
@@ -22,7 +22,44 @@ import pandas as pd
 from pandas.api.types import CategoricalDtype, is_int64_dtype
 # %%
 
-class OverlapStats:
+class OverlapStatsABC(ABC):
+
+    @abstractmethod
+    def compute(self, cores):
+        pass
+
+    def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) \
+            -> 'ClusterOverlapStats':
+        """Aggregate hits per cluster
+
+        Args:
+            cluster_ids: index must match the index of the coverage_df
+            min_counts: a warning will be displayed if any feature has less counts
+
+        Returns:
+            ClusterOverlapStats given the aggregated counts clusters x database files
+
+        Each overlap is only counted once, even if the coverage is > 1
+        """
+        assert self.coverage_df is not None
+        assert self.coverage_df.index.equals(cluster_ids.index)
+        cluster_ids.name = 'cluster_id'
+        bool_coverage_df = self.coverage_df.where(lambda df: df.le(1), 1)
+        cluster_counts = bool_coverage_df.groupby(cluster_ids).sum()
+        has_low_n_counts = cluster_counts.sum(axis=0).lt(min_counts)
+        if has_low_n_counts.any():
+            print('WARNING: the following BED files have less than {T} overlaps: ')
+            print(cluster_counts.sum(axis=0).loc[has_low_n_counts])
+        cluster_sizes = cluster_ids.value_counts().sort_index()
+        cluster_sizes.index.name = 'cluster_id'
+        cluster_sizes.name = 'Frequency'
+        return ClusterOverlapStats(cluster_counts, cluster_sizes=cluster_sizes,
+                                   metadata_table=self.metadata_table)
+        # pseudo-count
+        # if cluster_counts.eq(0).any().any():
+        # cluster_counts += 1
+
+class OverlapStats(OverlapStatsABC):
     # noinspection PyUnresolvedReferences
     """Calculate coverage stats for the input regions
 
@@ -231,37 +268,34 @@ class OverlapStats:
         coverage_df = pd.concat(chunk_dfs, axis=1)
         return coverage_df
 
-    def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) \
-            -> 'ClusterOverlapStats':
-        """Aggregate hits per cluster
 
-        Args:
-            cluster_ids: index must be sorted and
-                consist of columns Chromosome, Start, End
-            min_counts: a warning will be displayed if any feature has less counts
+class GenesetOverlapStats(OverlapStatsABC):
 
-        Returns:
-            ClusterOverlapStats given the aggregated counts clusters x database files
+    def __init__(self, annotations: pd.DataFrame, genesets_fp: str):
+        self.annotations = annotations
+        self.genesets_fp = genesets_fp
+        self.metadata_table = None
 
-        Each overlap is only counted once, even if the coverage is > 1
-        """
-        assert self.coverage_df is not None
-        assert self.coverage_df.index.equals(cluster_ids.index)
-        cluster_ids.name = 'cluster_id'
-        bool_coverage_df = self.coverage_df.where(lambda df: df.le(1), 1)
-        cluster_counts = bool_coverage_df.groupby(cluster_ids).sum()
-        has_low_n_counts = cluster_counts.sum(axis=0).lt(min_counts)
-        if has_low_n_counts.any():
-            print('WARNING: the following BED files have less than {T} overlaps: ')
-            print(cluster_counts.sum(axis=0).loc[has_low_n_counts])
-        cluster_sizes = cluster_ids.value_counts().sort_index()
-        cluster_sizes.index.name = 'cluster_id'
-        cluster_sizes.name = 'Frequency'
-        return ClusterOverlapStats(cluster_counts, cluster_sizes=cluster_sizes,
-                                   metadata_table=self.metadata_table)
-        # pseudo-count
-        # if cluster_counts.eq(0).any().any():
-        # cluster_counts += 1
+    def compute(self, cores=1):
+        # cores is currently ignored
+        with open(self.genesets_fp) as fin:
+            geneset_lines = fin.readlines()
+        geneset_sets = [set(line.rstrip().split('\t')[2:]) for line in geneset_lines]
+        geneset_names = [line.split('\t')[0] for line in geneset_lines]
+        hits = np.zeros((self.annotations.shape[0], len(geneset_sets)), np.int64)
+        genes = (self.annotations['Gene'].str.split(',', expand=False)
+                 .apply(lambda x: set(x) if x is not None else None).tolist())
+        for geneset_idx, geneset_set in enumerate(geneset_sets):
+            for region_idx, genes_set in enumerate(genes):
+                if genes_set is None:
+                    continue
+                if genes_set <= geneset_set:
+                    hits[region_idx, geneset_idx] = 1
+
+        self.coverage_df = pd.DataFrame(hits, columns = geneset_names,
+                                        index=self.annotations.index)
+
+
 
 
 class ClusterOverlapStats:
@@ -363,13 +397,14 @@ class ClusterOverlapStats:
         Returns:
             p-value, q-value and other stats per database file
         """
+        print('updated')
         if test_args is None:
             test_args = {}
         if method == 'fisher':
-            base_test_args =  dict(
-                    simulate_pval=True, replicate=int(1e7),
-                    workspace=100_000_000, seed=123)
-            base_test_args.update(test_args)
+            # base_test_args =  dict(
+            #         simulate_pval=True, replicate=int(1e7),
+            #         workspace=100_000_000, seed=123)
+            # base_test_args.update(test_args)
             slices = [slice(l[0], l[-1] + 1)
                       for l in more_itertools.chunked(
                         np.arange(self.hits.shape[1]), cores)]
@@ -378,7 +413,7 @@ class ClusterOverlapStats:
             pvalues_partial_dfs = Parallel(cores)(
                     delayed(_run_fisher_exact_test_in_parallel_loop)
                     (df=self.hits.iloc[:, curr_slice] ,
-                     cluster_sizes=self.cluster_sizes, test_args=base_test_args)
+                     cluster_sizes=self.cluster_sizes, test_args=test_args)
                     for curr_slice in slices)
             print('Took ', (time() - t1) / 60, ' min')
             pvalues = pd.concat(pvalues_partial_dfs, axis=0).sort_index()
@@ -435,7 +470,7 @@ def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str
 
 def _run_fisher_exact_test_in_parallel_loop(df, cluster_sizes, test_args):
     fn = lambda ser: fisher_exact(
-            [ser.values, (cluster_sizes - ser).values],
+            [ser.tolist(), (cluster_sizes - ser).tolist()],
             **test_args)
     pvalues = df.agg(fn, axis=0)
     return pvalues
