@@ -1,28 +1,30 @@
 # %%
-from abc import abstractmethod, ABC
-from copy import copy
 import gzip
 import os
 import re
 import subprocess
+from abc import abstractmethod, ABC
+from copy import copy
+from io import StringIO
+from itertools import product
+from tempfile import TemporaryDirectory
+from time import time
+from typing import Union, List, Optional, Iterable, Any, Dict
 
 import more_itertools
-from io import StringIO
-from time import time
-from tempfile import TemporaryDirectory
-from typing import Union, List, Optional, Iterable, Any, Dict, Set
-from joblib import Parallel, delayed
-
-from scipy.stats import chi2_contingency
-from statsmodels.stats.multitest import multipletests
-from FisherExact import fisher_exact
-
 import numpy as np
 import pandas as pd
+import FisherExact as fe
+from joblib import Parallel, delayed
 from pandas.api.types import CategoricalDtype, is_int64_dtype
+from scipy.stats import chi2_contingency, fisher_exact
+from scipy.stats.contingency import expected_freq
 # %%
 
 class OverlapStatsABC(ABC):
+
+    coverage_df: pd.DataFrame
+    metadata_table: Union[pd.DataFrame, str]
 
     @abstractmethod
     def compute(self, cores):
@@ -33,7 +35,8 @@ class OverlapStatsABC(ABC):
         """Aggregate hits per cluster
 
         Args:
-            cluster_ids: index must match the index of the coverage_df
+            cluster_ids: index must have levels Chromosome, Start, End.
+                Level values must match the index of the coverage_df.
             min_counts: a warning will be displayed if any feature has less counts
 
         Returns:
@@ -42,6 +45,7 @@ class OverlapStatsABC(ABC):
         Each overlap is only counted once, even if the coverage is > 1
         """
         assert self.coverage_df is not None
+        assert cluster_ids.index.names == ['Chromosome', 'Start', 'End']
         assert self.coverage_df.index.equals(cluster_ids.index)
         cluster_ids.name = 'cluster_id'
         bool_coverage_df = self.coverage_df.where(lambda df: df.le(1), 1)
@@ -68,7 +72,9 @@ class OverlapStats(OverlapStatsABC):
     Args:
         bed_files: iterable of BED-file paths. May be mix of any compressed
             filetypes supported by bedtools.
-        regions: either path to BED file, or dataframe of regions
+        regions: either path to BED file, or dataframe of query regions
+            If dataframe: the first three columns must be Chromosome, Start, End
+            (with these names). Any other column will be ignored.
         tmpdir: will be used for creation of temporary results
         chromosomes: when given defines the order of the chromosome categorical
             and speeds up reading the data. Otherwise, categorical order will
@@ -118,20 +124,22 @@ class OverlapStats(OverlapStatsABC):
 
     @staticmethod
     def _assert_coverage_df_contract(coverage_df) -> None:
-        assert coverage_df.index.names[0:3] == ['Chromosome', 'Start', 'End']
+        """Currently this contract enforces a binary coverage representation"""
+        assert coverage_df.index.names == ['Chromosome', 'Start', 'End']
         assert coverage_df.index.is_lexsorted()
         assert is_int64_dtype(coverage_df.values)
         assert coverage_df.columns.name == 'dataset'
         assert not coverage_df.isna().any(axis=None)
+        assert coverage_df.ge(0).all(axis=None) and coverage_df.lt(2).all(axis=None)
 
 
     def compute(self, cores) -> None:
         """Calculate coverage matrix (input_regions x database files)
 
         Uses bedtools annotate -counts. May be extended to also deal with
-        fractional overlaps in the future.
-
-        Coverage can be > 1
+        fractional overlaps in the future. Coverage is encoded in a binary manner,
+        quantitative coverage information is in principle available from bedtools
+        annotate, but currently dismissed.
         """
 
         print('Start calculation of coverage stats')
@@ -152,11 +160,21 @@ class OverlapStats(OverlapStatsABC):
                 chromosome_dtype, names, regions_fp, cores, orig_chrom_categories)
         print('Done. Time: ', time() - t1)
 
+        # Dismiss quantitative coverage information and convert to binary repr.
+        coverage_df = coverage_df.where(coverage_df.eq(0), 1)
+
         self._assert_coverage_df_contract(coverage_df)
         self.coverage_df = coverage_df
 
 
     def _prepare_data_for_bedtools_call(self, prefix_action):
+        """Handle chromosome prefix and provide regions BED file
+
+        If the chromosome prefix convention between the query regions and
+        the database is inconsistent, the query regions prefix is adapted for
+        the course of the coverage computation. The final result will have the
+        original prefix convention from the query regions.
+        """
 
         if prefix_action is None and isinstance(self.regions, pd.DataFrame):
             regions_fp = self.tmpdir + '/experiment.bed'
@@ -256,6 +274,10 @@ class OverlapStats(OverlapStatsABC):
         return prefix_action
 
     def _retrieve_coverage_with_bedtools(self, chromosome_dtype, names, regions_fp, cores, orig_chrom_categories):
+        """Parallel bedtools annotate calls on chunks of the query regions
+
+        Uses _run_bedtools_annotate as worker function
+        """
         print(f'Running on {cores} cores')
         chunk_size = int(np.ceil(len(self.bed_files) / cores))
         bed_files_chunked = more_itertools.chunked(self.bed_files, chunk_size)
@@ -271,25 +293,63 @@ class OverlapStats(OverlapStatsABC):
 
 class GenesetOverlapStats(OverlapStatsABC):
 
-    def __init__(self, annotations: pd.DataFrame, genesets_fp: str):
+    def __init__(self, annotations: pd.Series, genesets_fp: str):
+        """Compute overlap with genesets in GMT format
+
+        Attributes:
+            annotations: one row per region, only one column is required: 'Gene'
+                This column should be of type str and may hold one or more gene annotations.
+                Multiple gene annotations are given as gene1,gene2,gene3
+                Index must have levels Chromosome, Start, End. The index level values of
+                the annotations and the cluster ids passed to the aggregate method
+                must match.
+            genesets_fp: path to a genesets file in GMT format
+
+        GMT format definition: https://software.broadinstitute.org/cancer/software/gsea/wiki/index.php/Data_formats#GMT:_Gene_Matrix_Transposed_file_format_.28.2A.gmt.29
+        """
         self.annotations = annotations
         self.genesets_fp = genesets_fp
+        # The metadata table is not used for this class
+        # However, the attribute is required by OverlapStatsABC.aggregate
+        # Until this coupling is removed, we just carry it along
         self.metadata_table = None
 
+    def _assert_annotations_contract(self):
+        assert isinstance(self.annotations, pd.Series)
+        assert isinstance(self.annotations.iloc[0], str)
+        assert self.annotations.index.names == ['Chromosome', 'Start', 'End']
+
     def compute(self, cores=1):
+        """Compute the coverage df (available as attribute from now on)
+
+        Args:
+            cores: ignored, for compatibility with abstract method. Will be part
+                of a cleanup soonish :) Note to self: cores are also passed in snakemake workflow, this would also need to be updated!
+        """
         # cores is currently ignored
         with open(self.genesets_fp) as fin:
             geneset_lines = fin.readlines()
-        geneset_sets = [set(line.rstrip().split('\t')[2:]) for line in geneset_lines]
+
+        # GMT format: gene set name | optional description | gene1 | gene2 | gene 3
+        # tab-separated
+        # variable number of columns due variable gene set length
+
+        # For each geneset, get the name and all contained genes as set
         geneset_names = [line.split('\t')[0] for line in geneset_lines]
-        hits = np.zeros((self.annotations.shape[0], len(geneset_sets)), np.int64)
-        genes = (self.annotations['Gene'].str.split(',', expand=False)
+        geneset_sets = [set(line.rstrip().split('\t')[2:]) for line in geneset_lines]
+
+        # Convert the string gene annotation (gene1,gene2) into a list of sets,
+        # one per region, detailing the genes annotated to this region
+        region_gene_annos = (self.annotations.str.split(',', expand=False)
                  .apply(lambda x: set(x) if x is not None else None).tolist())
+
+        hits = np.zeros((self.annotations.shape[0], len(geneset_sets)), np.int64)
         for geneset_idx, geneset_set in enumerate(geneset_sets):
-            for region_idx, genes_set in enumerate(genes):
-                if genes_set is None:
+            for region_idx, region_genes_set in enumerate(region_gene_annos):
+                # TODO: this leaves the count as 0, should set to NA
+                if region_genes_set is None:
                     continue
-                if genes_set <= geneset_set:
+                if region_genes_set <= geneset_set:
                     hits[region_idx, geneset_idx] = 1
 
         self.coverage_df = pd.DataFrame(hits, columns = geneset_names,
@@ -299,6 +359,7 @@ class GenesetOverlapStats(OverlapStatsABC):
 
 
 class ClusterOverlapStats:
+
     def __init__(self, hits: pd.DataFrame, cluster_sizes: pd.Series,
                  metadata_table: Optional[pd.DataFrame] = None) -> None:
         """Cluster hit stats: (cluster_id vs database files)
@@ -324,6 +385,8 @@ class ClusterOverlapStats:
         self._ratio: Optional[pd.DataFrame] = None
         self._odds_ratio: Optional[pd.DataFrame] = None
         self._normalized_ratio: Optional[pd.DataFrame] = None
+        self.cluster_pvalues = None
+        self.feature_pvalues = None
 
 
     @property
@@ -354,32 +417,64 @@ class ClusterOverlapStats:
         return self._normalized_ratio
 
 
+    # @property
+    # def log_odds_ratio(self) -> pd.DataFrame:
+    #     """Compute log-odds ratio
+    #
+    #     For each cluster, all regions not in the cluster are taken as background
+    #     regions.
+    #     """
+    #     if self._odds_ratio is None:
+    #         pseudocount = 1
+    #         fg_and_hit = self.hits + pseudocount
+    #         fg_and_not_hit = -fg_and_hit.subtract(self.cluster_sizes, axis=0) + pseudocount
+    #         bg_and_hit = -fg_and_hit.subtract(self.hits.sum(axis=0), axis=1) + pseudocount
+    #         bg_sizes = self.cluster_sizes.sum() - self.cluster_sizes
+    #         bg_and_not_hit = -bg_and_hit.subtract(bg_sizes, axis=0) + pseudocount
+    #         odds_ratio_arr = np.log2( (fg_and_hit / fg_and_not_hit) / (bg_and_hit / bg_and_not_hit) )
+    #         odds_ratio_arr[~np.isfinite(odds_ratio_arr)] = np.nan
+    #         self._odds_ratio = odds_ratio_arr
+    #     return self._odds_ratio
+
+
     @property
     def log_odds_ratio(self) -> pd.DataFrame:
-        """log10(odds ratio)
+        """Compute log-odds ratio
 
         For each cluster, all regions not in the cluster are taken as background
         regions.
         """
         if self._odds_ratio is None:
-            pseudocount = 1
-            fg_and_hit = self.hits + pseudocount
-            fg_and_not_hit = -fg_and_hit.subtract(self.cluster_sizes, axis=0) + pseudocount
-            bg_and_hit = -fg_and_hit.subtract(self.hits.sum(axis=0), axis=1) + pseudocount
+            print('recompute')
+            # fg_and_hit = self.hits.values
+            # total_hits_per_dataset = self.hits.sum(axis=0).values
+            # cluster_sizes_col_vector = self.cluster_sizes.values[:, np.newaxis]
+            # fg_and_not_hit = cluster_sizes_col_vector - fg_and_hit
+            # bg_and_hit = total_hits_per_dataset - fg_and_hit
+            # bg_size = (self.cluster_sizes.sum() - self.cluster_sizes).values
+            # bg_and_not_hit = bg_size[:, np.newaxis] - bg_and_hit
+            fg_and_hit = self.hits
+            fg_and_not_hit = -(fg_and_hit.subtract(self.cluster_sizes, axis=0))
+            bg_and_hit = -(fg_and_hit.subtract(self.hits.sum(axis=0), axis=1))
             bg_sizes = self.cluster_sizes.sum() - self.cluster_sizes
-            bg_and_not_hit = -bg_and_hit.subtract(bg_sizes, axis=0) + pseudocount
-            odds_ratio_arr = np.log2( (fg_and_hit / fg_and_not_hit) / (bg_and_hit / bg_and_not_hit) )
-            odds_ratio_arr[~np.isfinite(odds_ratio_arr)] = np.nan
-            self._odds_ratio = odds_ratio_arr
+            bg_and_not_hit = -(bg_and_hit.subtract(bg_sizes, axis=0))
+            odds_ratio = np.log2( ((fg_and_hit + 1) / (fg_and_not_hit + 1))
+                                  / ((bg_and_hit + 1) / (bg_and_not_hit + 1)) )
+            odds_ratio[~np.isfinite(odds_ratio)] = np.nan
+            # self._odds_ratio = pd.DataFrame(
+            #         odds_ratio,
+            #         index=self.hits.index, columns=self.hits.columns)
+            self._odds_ratio = odds_ratio
         return self._odds_ratio
+
 
     def subset_hits(self, loc_arg) -> 'ClusterOverlapStats':
         new_inst = copy(self)
         new_inst.hits = self.hits.loc[:, loc_arg].copy()
         return new_inst
 
-    def test_for_enrichment(self, method: str, cores: int = 1,
-                            test_args: Optional[Dict[str, Any]] = None)\
+    def test_per_feature(self, method: str, cores: int = 1,
+                         test_args: Optional[Dict[str, Any]] = None)\
             -> pd.DataFrame:
         """Enrichment test per database file
 
@@ -400,49 +495,115 @@ class ClusterOverlapStats:
         print('updated')
         if test_args is None:
             test_args = {}
-        if method == 'fisher':
-            # base_test_args =  dict(
-            #         simulate_pval=True, replicate=int(1e7),
-            #         workspace=100_000_000, seed=123)
-            # base_test_args.update(test_args)
-            slices = [slice(l[0], l[-1] + 1)
-                      for l in more_itertools.chunked(
-                        np.arange(self.hits.shape[1]), cores)]
-            print('Starting fisher test')
-            t1 = time()
-            pvalues_partial_dfs = Parallel(cores)(
-                    delayed(_run_fisher_exact_test_in_parallel_loop)
-                    (df=self.hits.iloc[:, curr_slice] ,
-                     cluster_sizes=self.cluster_sizes, test_args=test_args)
-                    for curr_slice in slices)
-            print('Took ', (time() - t1) / 60, ' min')
-            pvalues = pd.concat(pvalues_partial_dfs, axis=0).sort_index()
-            corr_fn = lambda pvalues: multipletests(pvalues, method='fdr_bh')[1]
-        elif method == 'chi_square':
-            fn = lambda ser: \
-                chi2_contingency([ser.values, (self.cluster_sizes - ser).values])[1]
-            pvalues = self.hits.agg(fn, axis=0)
-            pvalues += 1e-100
-            corr_fn = lambda pvalues: multipletests(pvalues, method='fdr_bh')[1]
+        # Using simple integer seeds led to weird results, so no
+        # seed by default for now
+        merged_test_args =  dict(
+                simulate_pval=True, replicate=int(1e3),
+                workspace=1_000_000, alternative='two-sided')
+        merged_test_args.update(test_args)
+        if method == 'hybrid':
+            pvalues = hybrid_cont_table_test(hits=self.hits,
+                                             cluster_sizes=self.cluster_sizes,
+                                             test_args=merged_test_args,
+                                             cores=cores)
         else:
-            raise ValueError('Unknown test method')
+            raise ValueError('Currently not implemented')
 
         mlog10_pvalues = -np.log10(pvalues)
-        assert np.all(np.isfinite(mlog10_pvalues))
-        qvalues = corr_fn(pvalues)
-        qvalues += 1e-100
-        mlog10_qvalues = -np.log10(qvalues)
-        assert np.all(np.isfinite(mlog10_qvalues))
-        return pd.DataFrame(dict(pvalues=pvalues,
-                                 mlog10_pvalues=mlog10_pvalues,
-                                 qvalues=qvalues,
-                                 mlog10_qvalues=mlog10_qvalues),
-                            index=self.hits.columns)
+        # assert np.all(np.isfinite(mlog10_pvalues))
+        # qvalues = corr_fn(pvalues)
+        # qvalues += 1e-100
+        # mlog10_qvalues = -np.log10(qvalues)
+        # assert np.all(np.isfinite(mlog10_qvalues))
+        self.feature_pvalues = pd.DataFrame(dict(pvalues=pvalues,
+                                                 mlog10_pvalues=mlog10_pvalues,
+                                                 # qvalues=qvalues,
+                                                 # mlog10_qvalues=mlog10_qvalues
+                                                 ),
+                                            index=self.hits.columns)
+
+
+    def test_per_cluster_per_feature(self) -> None:
+        fg_and_hit = self.hits
+        fg_and_not_hit = -(fg_and_hit.subtract(self.cluster_sizes, axis=0))
+        bg_and_hit = -(fg_and_hit.subtract(self.hits.sum(axis=0), axis=1))
+        bg_sizes = self.cluster_sizes.sum() - self.cluster_sizes
+        bg_and_not_hit = -(bg_and_hit.subtract(bg_sizes, axis=0))
+        pvalues = np.ones(self.hits.shape, dtype='f8') - 1
+        for coords in product(np.arange(self.hits.shape[0]),
+                            np.arange(self.hits.shape[1])):
+            unused_odds_ratio, pvalue = fisher_exact(
+                    [[fg_and_hit.iloc[coords], fg_and_not_hit.iloc[coords]],
+                     [bg_and_hit.iloc[coords], bg_and_not_hit.iloc[coords]]],
+                    alternative='two-sided')
+            pvalues[coords] = pvalue
+        self.cluster_pvalues = pd.DataFrame(
+                pvalues, index=self.hits.index, columns=self.hits.columns)
+
+
+
+def meets_cochran(ser, cluster_sizes):
+    expected = expected_freq(np.array([ser, cluster_sizes - ser]))
+    emin = (np.round(expected) >= 1).all()
+    perc_expected = ((expected > 5).sum() / expected.size) > 0.8
+    return emin and perc_expected
+
+def chi_square(hits, cluster_sizes):
+    fn = lambda ser: \
+        chi2_contingency([ser.values, (cluster_sizes - ser).values])[1]
+    pvalues = hits.agg(fn, axis=0)
+    pvalues += 1e-100
+    return pvalues
+
+def fisher(hits, cluster_sizes, test_args, cores):
+    slices = [slice(l[0], l[-1] + 1)
+              for l in more_itertools.chunked(
+                np.arange(hits.shape[1]), cores)]
+    print('Starting fisher test')
+    t1 = time()
+    pvalues_partial_dfs = Parallel(cores)(
+            delayed(_run_fisher_exact_test_in_parallel_loop)
+            (df=hits.iloc[:, curr_slice] ,
+             cluster_sizes=cluster_sizes, test_args=test_args)
+            for curr_slice in slices)
+    print('Took ', (time() - t1) / 60, ' min')
+    pvalues = pd.concat(pvalues_partial_dfs, axis=0).sort_index()
+    return pvalues
+
+def _run_fisher_exact_test_in_parallel_loop(df, cluster_sizes, test_args):
+    fn = lambda ser: fe.fisher_exact(
+            [ser.tolist(), (cluster_sizes - ser).tolist()],
+            **test_args)
+    pvalues = df.agg(fn, axis=0)
+    return pvalues
+
+def hybrid_cont_table_test(hits, cluster_sizes, test_args, cores):
+
+    # ignore hits without any counts
+    no_counts = hits.sum().eq(0)
+    meets_cochran_ser = hits.apply(meets_cochran, cluster_sizes=cluster_sizes)
+
+    chi_square_pvalues = chi_square(
+            hits.loc[:, meets_cochran_ser & ~no_counts],
+            cluster_sizes)
+
+    fisher_pvalues = fisher(hits.loc[:, ~meets_cochran_ser & ~no_counts],
+                            cluster_sizes=cluster_sizes, test_args=test_args,
+                            cores=cores)
+
+    all_pvalues = pd.concat([chi_square_pvalues, fisher_pvalues], axis=0).reindex(hits.columns)
+
+    return all_pvalues
 
 
 def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str],
        chromosome_dtype: CategoricalDtype, orig_chrom_categories: List[str]) -> pd.DataFrame:
-    """Run bedtools annotate to get region coverage"""
+    """Run bedtools annotate to get region coverage
+
+    Returns:
+        dataframe with index ['Chromosome', 'Start', 'End'] and one i8 column
+        per dataset
+    """
     assert isinstance(chromosome_dtype, CategoricalDtype)
     proc = subprocess.run(['bedtools', 'annotate', '-counts',
                            '-i', regions_fp,
@@ -468,9 +629,3 @@ def _run_bedtools_annotate(regions_fp:str, bed_files: List[str], names: List[str
     coverage_df.columns.name = 'dataset'
     return coverage_df
 
-def _run_fisher_exact_test_in_parallel_loop(df, cluster_sizes, test_args):
-    fn = lambda ser: fisher_exact(
-            [ser.tolist(), (cluster_sizes - ser).tolist()],
-            **test_args)
-    pvalues = df.agg(fn, axis=0)
-    return pvalues
