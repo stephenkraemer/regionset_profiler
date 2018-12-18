@@ -94,18 +94,24 @@ def barcode_heatmap(
         linewidth = 1,
         rasterized = False,
         cbar_args = None,
+        vmin = None,
+        vmax = None,
+        robust = True,
         **kwargs) -> Figure:
     """Barcode heatmap
 
     Args:
         filter_on_per_feature_pvalue: if False, filter based on aggregated
             feature-info from per_cluster_per_feature pvalues (not implemented yet)
-        cbar_args: defaults to dict(shrink=0.4, aspect=20)
+        cbar_args: defaults to dict(shrink=0.4, aspect=20, extend='both')
         kwargs: passed to co.Heatmap
+        vmin, vmax, robust: if vmin or vmax are not set, the 0.02 and 0.98
+            quantiles are used (robust=True), or the min and max of all values
+            are used otherwise
     """
 
     if cbar_args is None:
-        cbar_args = dict(shrink=0.4, aspect=20)
+        cbar_args = dict(shrink=0.4, aspect=20, extend='both')
 
     # Get plot stat
     # --------------------------------------------------------------------------
@@ -141,12 +147,21 @@ def barcode_heatmap(
     width = row_label_width + (plot_stat.shape[1] * col_width_cm / 2.54)
     height = plot_stat.shape[0] * max(row_height_cm, row_label_height) + 1
 
+    if vmin is None:
+        if robust:
+            vmin = np.quantile(plot_stat, 0.02)
+        else:
+            vmin = plot_stat.min().min()
+    if vmax is None:
+        if robust:
+            vmax = np.quantile(plot_stat, 0.98)
+        else:
+            vmax = plot_stat.max().max()
     if plot_stat_is_divergent:
-        norm = MidpointNormalize(vmin=np.quantile(plot_stat, 0.02),
-                                 vmax=np.quantile(plot_stat, 0.98),
-                                 midpoint=0)
+        norm = MidpointNormalize(vmin=vmin, vmax=vmax, midpoint=0)
     else:
         norm = None
+        cbar_args.update({'clim': (vmin, vmax)})
 
     print('Clustered plot')
     cdg = co.ClusteredDataGrid(main_df=plot_stat)
