@@ -30,30 +30,54 @@ class OverlapStatsABC(ABC):
     def compute(self, cores):
         pass
 
-    def aggregate(self, cluster_ids: pd.Series, min_counts: int = 20) \
-            -> 'ClusterOverlapStats':
+    def aggregate(self, cluster_ids: pd.Series,
+                  index: Optional[pd.DataFrame] = None,
+                  regions: Optional[pd.DataFrame] = None) -> 'ClusterOverlapStats':
         """Aggregate hits per cluster
 
         Args:
             cluster_ids: index must have levels Chromosome, Start, End.
                 Level values must match the index of the coverage_df.
-            min_counts: a warning will be displayed if any feature has less counts
+                Even if merged query regions are passed through the regions arg,
+                the cluster_ids must contain every individual original query region.
+            index: GRanges index, restrict aggregation to regions in the index.
+                Can not be specified together with regions.
+            regions: Granges dataframe (*currently not implemented*)
+                1. Aggregation is restricted to regions covered by these GRanges
+                2. Genomic intervals may cover multiple query regions. If that is
+                   the case, the hit annotation for these query regions will be
+                   merged.
+                   However, a genomic interval may not cover multiple regions with
+                   multiple cluster id assignments. This will raise a RuntimeError.
+                Can not be specified together with index.
 
         Returns:
             ClusterOverlapStats given the aggregated counts clusters x database files
 
         Each overlap is only counted once, even if the coverage is > 1
         """
+        if index is not None and regions is not None:
+            raise ValueError('The index and regions args cannot both be defined')
+
         assert self.coverage_df is not None
         assert cluster_ids.index.names == ['Chromosome', 'Start', 'End']
         assert self.coverage_df.index.equals(cluster_ids.index)
         cluster_ids.name = 'cluster_id'
         bool_coverage_df = self.coverage_df.where(lambda df: df.le(1), 1)
-        cluster_counts = bool_coverage_df.groupby(cluster_ids).sum()
-        has_low_n_counts = cluster_counts.sum(axis=0).lt(min_counts)
-        if has_low_n_counts.any():
-            print('WARNING: the following BED files have less than {T} overlaps: ')
-            print(cluster_counts.sum(axis=0).loc[has_low_n_counts])
+
+        if index is not None:
+            bool_coverage_df = bool_coverage_df.loc[index, :]
+            # Assert that the index did not have query regions not contained
+            # in the coverage df. In future pandas versions, this should raise a
+            # KeyError, then this assertiong can be removed.
+            assert not bool_coverage_df.isna().any(axis=None)
+            coverage_groupby = bool_coverage_df.groupby(cluster_ids)
+        elif regions is not None:
+            raise NotImplementedError
+        else:
+            coverage_groupby = bool_coverage_df.groupby(cluster_ids)
+
+        cluster_counts = coverage_groupby.sum()
         cluster_sizes = cluster_ids.value_counts().sort_index()
         cluster_sizes.index.name = 'cluster_id'
         cluster_sizes.name = 'Frequency'
@@ -104,7 +128,7 @@ class OverlapStats(OverlapStatsABC):
             assert metadata_table.columns.contains('abspath')
         self.metadata_table = metadata_table
         if metadata_table is not None:
-            self.bed_files = metadata_table['abspath']
+            self.bed_files = metadata_table['abspath'].tolist()
         else:
             self.bed_files = list(bed_files)
         self.regions = regions
@@ -319,7 +343,7 @@ class GenesetOverlapStats(OverlapStatsABC):
         assert isinstance(self.annotations.iloc[0], str)
         assert self.annotations.index.names == ['Chromosome', 'Start', 'End']
 
-    def compute(self, cores=1):
+    def compute(self, cores=1) -> None:
         """Compute the coverage df (available as attribute from now on)
 
         Args:
@@ -475,7 +499,7 @@ class ClusterOverlapStats:
 
     def test_per_feature(self, method: str, cores: int = 1,
                          test_args: Optional[Dict[str, Any]] = None)\
-            -> pd.DataFrame:
+            -> None:
         """Enrichment test per database file
 
         Args:
@@ -583,13 +607,27 @@ def hybrid_cont_table_test(hits, cluster_sizes, test_args, cores):
     no_counts = hits.sum().eq(0)
     meets_cochran_ser = hits.apply(meets_cochran, cluster_sizes=cluster_sizes)
 
-    chi_square_pvalues = chi_square(
-            hits.loc[:, meets_cochran_ser & ~no_counts],
-            cluster_sizes)
 
-    fisher_pvalues = fisher(hits.loc[:, ~meets_cochran_ser & ~no_counts],
-                            cluster_sizes=cluster_sizes, test_args=test_args,
-                            cores=cores)
+    # If we don't prevent an empty hits df to be passed to chi_square,
+    # chi_square will return the original dataframe
+    # Then, the concatenation result at the end will result in a dataframe instead
+    # of a Series, and this will break downstream code
+    do_chi_square_test = meets_cochran_ser & ~no_counts
+    if do_chi_square_test.any():
+        chi_square_pvalues = chi_square(
+                hits.loc[:, do_chi_square_test],
+                cluster_sizes)
+    else:
+        chi_square_pvalues = pd.Series()
+
+    # See block above for explanation of this defensive construct
+    do_fisher_test = ~meets_cochran_ser & ~no_counts
+    if do_fisher_test.any():
+        fisher_pvalues = fisher(hits.loc[:, do_fisher_test],
+                                cluster_sizes=cluster_sizes, test_args=test_args,
+                                cores=cores)
+    else:
+        fisher_pvalues = pd.Series()
 
     all_pvalues = pd.concat([chi_square_pvalues, fisher_pvalues], axis=0).reindex(hits.columns)
 

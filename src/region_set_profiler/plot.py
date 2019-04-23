@@ -9,6 +9,7 @@ import codaplot as co
 import pandas as pd
 import matplotlib as mpl
 from matplotlib.figure import Figure  # for autocompletion in pycharm
+import matplotlib.pyplot as plt
 import numpy as np
 import region_set_profiler as rsp
 
@@ -31,7 +32,7 @@ def get_text_width_height(iterable: Iterable, font_size: float,
         width, height required for the labels
     """
 
-    height_cm = font_size * 1 / 72
+    height_cm = font_size * 1 / 72 + 2/72
     max_text_length = max([len(s) for s in iterable])
     max_width_cm = height_cm * 0.6 * max_text_length
     if target_axis == 'y':
@@ -53,37 +54,17 @@ class MidpointNormalize(mpl.colors.Normalize):
         return np.ma.masked_array(np.interp(value, x, y))
 
 
-# %% Globals
-# ==============================================================================
-paper_context = {
-    'font.size': 7,
-    'axes.labelsize': 7,
-    'axes.titlesize': 7,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'legend.fontsize': 7,
-    'axes.linewidth': 1.0,
-    'grid.linewidth': 0.8,
-    'lines.linewidth': 0.8,
-    'lines.markersize': 3,
-    'patch.linewidth': 0.8,
-    'xtick.major.width': 1.0,
-    'ytick.major.width': 1.0,
-    'xtick.minor.width': 0.8,
-    'ytick.minor.width': 0.8,
-    'xtick.major.size': 4.800000000000001,
-    'ytick.major.size': 4.800000000000001,
-    'xtick.minor.size': 3.2,
-    'ytick.minor.size': 3.2
-}
-
-
 # %% Plots
 # ==============================================================================
 
 def barcode_heatmap(
         cluster_overlap_stats: rsp.ClusterOverlapStats,
+        plot_stat = 'p-value',
         max_pvalue = 1e-3,
+        vmin = None,
+        vmax = None,
+        vmin_quantile=0.02,
+        vlim=None,
         n_top_hits = None,
         filter_on_per_feature_pvalue = True,
         cluster_features = True,
@@ -94,44 +75,54 @@ def barcode_heatmap(
         linewidth = 1,
         rasterized = False,
         cbar_args = None,
-        vmin = None,
-        vmax = None,
         robust = True,
+        clusters_as_rows = False,
         **kwargs) -> Figure:
     """Barcode heatmap
 
     Args:
         filter_on_per_feature_pvalue: if False, filter based on aggregated
             feature-info from per_cluster_per_feature pvalues (not implemented yet)
+        plot_stat: 'p-value' or 'log-odds' (could also add both at the same time...)
         cbar_args: defaults to dict(shrink=0.4, aspect=20, extend='both')
         kwargs: passed to co.Heatmap
         vmin, vmax, robust: if vmin or vmax are not set, the 0.02 and 0.98
             quantiles are used (robust=True), or the min and max of all values
             are used otherwise
     """
+    print('new barcode heatmap')
+
+    colorbar_height_in = 2/2.54
+    colorbar_width_in = 0.7/2.54
 
     if cbar_args is None:
         cbar_args = dict(shrink=0.4, aspect=20, extend='both')
 
     # Get plot stat
     # --------------------------------------------------------------------------
-    # For now only p-value based plot stat (others may be added in the future)
-    # To visualize the p-values, we give log10(p-values) associated with
-    # positive log-odds ratios a positive sign, while p-values associated
-    # with depletion retain the negative sign
-    log10_pvalues = np.log10(cluster_overlap_stats.cluster_pvalues
-                             + 1e-100)  # add small float to avoid inf values
-    plot_stat = log10_pvalues * -np.sign(cluster_overlap_stats.log_odds_ratio)
+    if plot_stat == 'p-value':
+        # To visualize the p-values, we give log10(p-values) associated with
+        # positive log-odds ratios a positive sign, while p-values associated
+        # with depletion retain the negative sign
+        log10_pvalues = np.log10(cluster_overlap_stats.cluster_pvalues
+                                 + 1e-100)  # add small float to avoid inf values
+        plot_stat = log10_pvalues * -np.sign(cluster_overlap_stats.log_odds_ratio)
 
+        # Filter based on p-value threshold and take the top ranked features if requested
+        plot_stat = filter_plot_stats(plot_stat, cluster_overlap_stats,
+                                      filter_on_per_feature_pvalue,
+                                      max_pvalue, n_top_hits)
+        if plot_stat.empty or plot_stat.shape[1] == 1:
+            print(f'WARNING: no features left after filtering with {max_pvalue}')
+            return plt.figure()
+
+    elif plot_stat == 'log-odds':
+        plot_stat = cluster_overlap_stats.log_odds_ratio
 
     # Discard features with NA if we are clustering the features
     if cluster_features:
         plot_stat = plot_stat.dropna(how='any', axis=1)
 
-    # Filter based on p-value threshold and take the top ranked features if requested
-    plot_stat = filter_plot_stats(plot_stat, cluster_overlap_stats,
-                                  filter_on_per_feature_pvalue,
-                                  max_pvalue, n_top_hits)
 
     # Create heatmap
     # --------------------------------------------------------------------------
@@ -139,34 +130,53 @@ def barcode_heatmap(
     cmap = divergent_cmap if plot_stat_is_divergent else sequential_cmap
 
     # Transpose plot stat for plotting and final processing
-    plot_stat = plot_stat.T
+    if not clusters_as_rows:
+        plot_stat = plot_stat.T
 
     # Get plot dimensions
+    curr_font_size = mpl.rcParams['font.size']
     row_label_width, row_label_height = get_text_width_height(
-            plot_stat.index, paper_context['font.size'])
-    width = row_label_width + (plot_stat.shape[1] * col_width_cm / 2.54)
-    height = plot_stat.shape[0] * max(row_height_cm, row_label_height) + 1
+            plot_stat.index.astype(str), curr_font_size)
+    col_label_width, col_label_height = get_text_width_height(
+            plot_stat.columns.astype(str), curr_font_size, target_axis='x')
+    height = (plot_stat.shape[0] * max(row_height_cm, row_label_height)
+              + col_label_height)
+    width = row_label_width + (plot_stat.shape[1] * col_width_cm / 2.54) + colorbar_width_in
+    colorbar_height_in = min(colorbar_height_in, height)
 
     if vmin is None:
         if robust:
-            vmin = np.quantile(plot_stat, 0.02)
+            vmin = np.quantile(plot_stat, vmin_quantile)
         else:
             vmin = plot_stat.min().min()
     if vmax is None:
         if robust:
-            vmax = np.quantile(plot_stat, 0.98)
+            vmax = np.quantile(plot_stat, 1 - vmin_quantile)
         else:
             vmax = plot_stat.max().max()
+    if vlim is not None:
+        vmin = min(vmin, vlim[0])
+        vmax = max(vmax, vlim[1])
+
     if plot_stat_is_divergent:
-        norm = MidpointNormalize(vmin=vmin, vmax=vmax, midpoint=0)
+        norm = MidpointNormalize(vmin=vmin, vmax=vmax, midpoint=0.)
     else:
+        # note: this block may be wrong and untested
         norm = None
         cbar_args.update({'clim': (vmin, vmax)})
 
     print('Clustered plot')
     cdg = co.ClusteredDataGrid(main_df=plot_stat)
     if cluster_features:
-        cdg.cluster_rows(method='average', metric='cityblock')
+        if clusters_as_rows:
+            cdg.cluster_cols(method='average', metric='cityblock')
+        else:
+            cdg.cluster_rows(method='average', metric='cityblock')
+
+    shrink = colorbar_height_in / height
+    aspect = colorbar_height_in / colorbar_width_in
+    other_cbar_args = dict(shrink=shrink, aspect=aspect)
+
     gm = cdg.plot_grid(grid=[
         [
             co.Heatmap(df=plot_stat,
@@ -175,7 +185,8 @@ def barcode_heatmap(
                        norm=norm,
                        rasterized=rasterized,
                        linewidth=linewidth,
-                       cbar_args=cbar_args,
+                       # cbar_args=cbar_args,
+                       cbar_args=other_cbar_args,
                        edgecolor='white',
                        **kwargs,
                        ),
@@ -204,17 +215,19 @@ def filter_plot_stats(plot_stat, cluster_overlap_stats,
         filter_on_per_feature_pvalue: if False, filter based on aggregated
             feature-info from per_cluster_per_feature pvalues (not implemented yet)
     """
+    print('reloaded')
     if filter_on_per_feature_pvalue:
-        feature_pvalues = (cluster_overlap_stats
+        plot_feature_pvalues = (cluster_overlap_stats
             .feature_pvalues['pvalues']
             .loc[plot_stat.columns])
     else:
-        raise ValueError('Filtering based on per_cluster_per_feature '
-                         'pvalues is not yet implemented')
-    feature_pvalues = feature_pvalues.loc[feature_pvalues.lt(max_pvalue)]
-    if n_top_hits is not None and n_top_hits < len(feature_pvalues):
-        feature_pvalues = feature_pvalues.nsmallest(n_top_hits)
-    plot_stat = plot_stat.loc[:, feature_pvalues.index]
+        print('here')
+        plot_feature_pvalues = (cluster_overlap_stats.cluster_pvalues
+            .min(axis=0).loc[plot_stat.columns])
+    plot_feature_pvalues = plot_feature_pvalues.loc[plot_feature_pvalues.lt(max_pvalue)]
+    if n_top_hits is not None and n_top_hits < len(plot_feature_pvalues):
+        plot_feature_pvalues = plot_feature_pvalues.nsmallest(n_top_hits)
+    plot_stat = plot_stat.loc[:, plot_feature_pvalues.index]
     return plot_stat
 
 # %%
