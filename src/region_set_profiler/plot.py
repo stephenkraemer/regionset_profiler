@@ -60,13 +60,10 @@ class MidpointNormalize(mpl.colors.Normalize):
 def barcode_heatmap(
         cluster_overlap_stats: rsp.ClusterOverlapStats,
         plot_stat = 'p-value',
-        max_pvalue = 1e-3,
         vmin = None,
         vmax = None,
         vmin_quantile=0.02,
         vlim=None,
-        n_top_hits = None,
-        filter_on_per_feature_pvalue = True,
         cluster_features = True,
         col_width_cm=2, row_height_cm=0.2,
         row_labels_show = True,
@@ -96,7 +93,9 @@ def barcode_heatmap(
     colorbar_width_in = 0.7/2.54
 
     if cbar_args is None:
-        cbar_args = dict(shrink=0.4, aspect=20, extend='both')
+        # TODO extend='both' fails
+        # cbar_args = dict(shrink=0.4, aspect=20, extend='both')
+        cbar_args = dict(shrink=0.4, aspect=20)
 
     # Get plot stat
     # --------------------------------------------------------------------------
@@ -107,14 +106,6 @@ def barcode_heatmap(
         log10_pvalues = np.log10(cluster_overlap_stats.cluster_pvalues
                                  + 1e-100)  # add small float to avoid inf values
         plot_stat = log10_pvalues * -np.sign(cluster_overlap_stats.log_odds_ratio)
-
-        # Filter based on p-value threshold and take the top ranked features if requested
-        plot_stat = filter_plot_stats(plot_stat, cluster_overlap_stats,
-                                      filter_on_per_feature_pvalue,
-                                      max_pvalue, n_top_hits)
-        if plot_stat.empty or plot_stat.shape[1] == 1:
-            print(f'WARNING: no features left after filtering with {max_pvalue}')
-            return plt.figure()
 
     elif plot_stat == 'log-odds':
         plot_stat = cluster_overlap_stats.log_odds_ratio
@@ -163,7 +154,8 @@ def barcode_heatmap(
     else:
         # note: this block may be wrong and untested
         norm = None
-        cbar_args.update({'clim': (vmin, vmax)})
+        # does not seem to be necessary?
+        # cbar_args.update({'clim': (vmin, vmax)})
 
     print('Clustered plot')
     cdg = co.ClusteredDataGrid(main_df=plot_stat)
@@ -173,9 +165,10 @@ def barcode_heatmap(
         else:
             cdg.cluster_rows(method='average', metric='cityblock')
 
-    shrink = colorbar_height_in / height
-    aspect = colorbar_height_in / colorbar_width_in
-    other_cbar_args = dict(shrink=shrink, aspect=aspect)
+    # doesn't work well with these formulas
+    # shrink = colorbar_height_in / height
+    # aspect = colorbar_height_in / colorbar_width_in
+    # other_cbar_args = dict(shrink=shrink, aspect=aspect)
 
     gm = cdg.plot_grid(grid=[
         [
@@ -185,8 +178,8 @@ def barcode_heatmap(
                        norm=norm,
                        rasterized=rasterized,
                        linewidth=linewidth,
-                       # cbar_args=cbar_args,
-                       cbar_args=other_cbar_args,
+                       cbar_args=cbar_args,
+                       # cbar_args=other_cbar_args,
                        edgecolor='white',
                        **kwargs,
                        ),
@@ -200,34 +193,34 @@ def barcode_heatmap(
     return gm.fig
 
 
-def filter_plot_stats(plot_stat, cluster_overlap_stats,
-                      filter_on_per_feature_pvalue, max_pvalue, n_top_hits=None)\
-        -> pd.DataFrame:
-    """Filter statistics derived from ClusterOverlapStats based on p-value
-
-    Features with p-values above max_pvalue are discarded and the
-    n_top_hits of the remaining features are returned, if n_top_hits
-    is not None.
-
-    Args:
-        plot_stat: any dataframe clusters x features, with features a subset
-            of the features contained in the cluster_overlap_stats
-        filter_on_per_feature_pvalue: if False, filter based on aggregated
-            feature-info from per_cluster_per_feature pvalues (not implemented yet)
-    """
-    print('reloaded')
-    if filter_on_per_feature_pvalue:
-        plot_feature_pvalues = (cluster_overlap_stats
-            .feature_pvalues['pvalues']
-            .loc[plot_stat.columns])
-    else:
-        print('here')
-        plot_feature_pvalues = (cluster_overlap_stats.cluster_pvalues
-            .min(axis=0).loc[plot_stat.columns])
-    plot_feature_pvalues = plot_feature_pvalues.loc[plot_feature_pvalues.lt(max_pvalue)]
-    if n_top_hits is not None and n_top_hits < len(plot_feature_pvalues):
-        plot_feature_pvalues = plot_feature_pvalues.nsmallest(n_top_hits)
-    plot_stat = plot_stat.loc[:, plot_feature_pvalues.index]
-    return plot_stat
+# def filter_plot_stats(plot_stat, cluster_overlap_stats,
+#                       filter_on_per_feature_pvalue, max_pvalue, n_top_hits=None)\
+#         -> pd.DataFrame:
+#     """Filter statistics derived from ClusterOverlapStats based on p-value
+#
+#     Features with p-values above max_pvalue are discarded and the
+#     n_top_hits of the remaining features are returned, if n_top_hits
+#     is not None.
+#
+#     Args:
+#         plot_stat: any dataframe clusters x features, with features a subset
+#             of the features contained in the cluster_overlap_stats
+#         filter_on_per_feature_pvalue: if False, filter based on aggregated
+#             feature-info from per_cluster_per_feature pvalues (not implemented yet)
+#     """
+#     print('reloaded')
+#     if filter_on_per_feature_pvalue:
+#         plot_feature_pvalues = (cluster_overlap_stats
+#             .feature_pvalues['pvalues']
+#             .loc[plot_stat.columns])
+#     else:
+#         print('here')
+#         plot_feature_pvalues = (cluster_overlap_stats.cluster_pvalues
+#             .min(axis=0).loc[plot_stat.columns])
+#     plot_feature_pvalues = plot_feature_pvalues.loc[plot_feature_pvalues.lt(max_pvalue)]
+#     if n_top_hits is not None and n_top_hits < len(plot_feature_pvalues):
+#         plot_feature_pvalues = plot_feature_pvalues.nsmallest(n_top_hits)
+#     plot_stat = plot_stat.loc[:, plot_feature_pvalues.index]
+#     return plot_stat
 
 # %%
