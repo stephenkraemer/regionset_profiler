@@ -9,7 +9,7 @@ from io import StringIO
 from itertools import product
 from tempfile import TemporaryDirectory
 from time import time
-from typing import Union, List, Optional, Iterable, Any, Dict
+from typing import Union, List, Optional, Iterable, Any, Dict, Set
 
 import more_itertools
 import numpy as np
@@ -19,6 +19,7 @@ from joblib import Parallel, delayed
 from pandas.api.types import CategoricalDtype, is_int64_dtype
 from scipy.stats import chi2_contingency, fisher_exact
 from scipy.stats.contingency import expected_freq
+from statsmodels.stats.multitest import multipletests
 
 # %%
 
@@ -161,7 +162,10 @@ class OverlapStats(OverlapStatsABC):
         """Currently this contract enforces a binary coverage representation"""
         assert coverage_df.index.names == ["Chromosome", "Start", "End"]
         assert coverage_df.index.is_lexsorted()
-        assert is_int64_dtype(coverage_df.values)
+        # this seems to have a bug
+        # assert is_int64_dtype(coverage_df.values)
+        # instead for now
+        assert coverage_df.dtypes.eq(np.int64).all()
         assert coverage_df.columns.name == "dataset"
         assert not coverage_df.isna().any(axis=None)
         assert coverage_df.ge(0).all(axis=None) and coverage_df.lt(2).all(axis=None)
@@ -434,7 +438,10 @@ class ClusterOverlapStats:
         assert hits.index.name == "cluster_id"
         assert hits.index.is_monotonic_increasing
         hits.columns.name = "dataset"
-        assert is_int64_dtype(hits.values)
+        # this seems to have a bug
+        # assert is_int64_dtype(hits.values)
+        # instead for now
+        assert hits.dtypes.eq(np.int64).all()
         self._hits = hits
 
         assert cluster_sizes.index.name == "cluster_id"
@@ -844,3 +851,74 @@ def _run_bedtools_annotate(
     coverage_df.sort_index(inplace=True)
     coverage_df.columns.name = "dataset"
     return coverage_df
+
+def hypergeometric_test(discovery_gene_names: Set, all_gene_names: Set, gmt_fp: str) -> pd.DataFrame:
+    """
+
+    Returns:
+        pd.DataFrame, columns:
+
+    """
+
+
+    assert isinstance(discovery_gene_names, set)
+    assert isinstance(all_gene_names, set)
+
+    # Read GMT: get a list of geneset names, and a list of the genes in each geneset
+    with open(gmt_fp) as fin:
+        geneset_lines = fin.readlines()
+
+    # GMT format: gene set name | optional description | gene1 | gene2 | gene 3
+    # tab-separated
+    # variable number of columns due variable gene set length
+
+    # For each geneset, get the name and all contained genes as set
+    geneset_names = [line.split("\t")[0] for line in geneset_lines]
+    geneset_sets = [set(line.rstrip().split("\t")[2:]) for line in geneset_lines]
+
+    background_genes = all_gene_names.difference(discovery_gene_names)
+    n_background_genes = len(background_genes)
+    n_discovery_genes = len(discovery_gene_names)
+
+
+    results_l = []
+    for geneset_name, geneset_set in zip(geneset_names, geneset_sets):
+        res = {'geneset': geneset_name}
+        res['n_discovery_in_geneset'] = len(discovery_gene_names.intersection(geneset_set))
+        res['n_discovery_not_in_geneset'] = n_discovery_genes - res['n_discovery_in_geneset']
+        res['n_background_in_geneset'] = len(background_genes.intersection(geneset_set))
+        res['n_background_not_in_geneset'] = n_background_genes - res['n_background_in_geneset']
+        res['oddsratio'], res['p_value'] = fisher_exact([
+            [
+                res['n_discovery_in_geneset'],
+                res['n_discovery_not_in_geneset'],
+            ],
+            [
+                res['n_background_in_geneset'],
+                res['n_background_not_in_geneset'],
+            ]
+        ])
+        # this is the calculated oddsratio:
+        # oddsratio = (
+        #     (res['n_discovery_in_geneset'] / res['n_discovery_not_in_geneset'])
+        #     /
+        #     (res['n_background_in_geneset'] / res['n_background_not_in_geneset'])
+        # )
+        results_l.append(res)
+
+    res_df = pd.DataFrame(results_l)
+    _, q_values, _, _ = multipletests(res_df['p_value'], method='fdr_bh')
+    res_df['q_values'] = q_values
+    res_df['log_oddsratio'] = np.log2(res_df['oddsratio'])
+    res_df['log10_qvalue'] = -np.log10(res_df['q_values'])
+    res_df['signed_log10_qvalue'] = np.sign(res_df['log_oddsratio']) * res_df['log10_qvalue']
+
+    return res_df
+
+
+
+
+
+
+
+

@@ -10,6 +10,7 @@ import pandas as pd
 import matplotlib as mpl
 from matplotlib.figure import Figure  # for autocompletion in pycharm
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 import numpy as np
 import region_set_profiler as rsp
 
@@ -43,16 +44,18 @@ def get_text_width_height(iterable: Iterable, font_size: float,
         raise ValueError(f'Unknown target axis {target_axis}')
 
 
-# From matplotlib docs:
-class MidpointNormalize(mpl.colors.Normalize):
-    def __init__(self, vmin=None, vmax=None, midpoint=None, clip=False):
-        self.midpoint = midpoint
-        mpl.colors.Normalize.__init__(self, vmin, vmax, clip)
+
+# https://matplotlib.org/3.1.0/tutorials/colors/colormapnorms.html
+class MidpointNormalize(colors.Normalize):
+    def __init__(self, vmin=None, vmax=None, vcenter=None, clip=False):
+        self.vcenter = vcenter
+        colors.Normalize.__init__(self, vmin, vmax, clip)
 
     def __call__(self, value, clip=None):
-        x, y = [self.vmin, self.midpoint, self.vmax], [0, 0.5, 1]
+        # I'm ignoring masked values and all kinds of edge cases to make a
+        # simple example...
+        x, y = [self.vmin, self.vcenter, self.vmax], [0, 0.5, 1]
         return np.ma.masked_array(np.interp(value, x, y))
-
 
 # %% Plots
 # ==============================================================================
@@ -65,7 +68,9 @@ def barcode_heatmap(
         vmin_quantile=0.02,
         vlim=None,
         cluster_features = True,
-        col_width_cm=2, row_height_cm=0.2,
+        spaced_heatmap_kws = None,
+        col_width_cm=2,
+        row_height_cm=0.2,
         row_labels_show = True,
         divergent_cmap = 'RdBu_r',
         sequential_cmap = 'YlOrBr',
@@ -74,8 +79,13 @@ def barcode_heatmap(
         cbar_args = None,
         robust = True,
         clusters_as_rows = False,
+        force_row_height = False,
+        metric = 'cityblock',
+        method = 'average',
         **kwargs) -> Figure:
     """Barcode heatmap
+
+    automatically normalizes to vcenter=0 if divergent stat, dont pass norm
 
     Args:
         filter_on_per_feature_pvalue: if False, filter based on aggregated
@@ -86,6 +96,7 @@ def barcode_heatmap(
         vmin, vmax, robust: if vmin or vmax are not set, the 0.02 and 0.98
             quantiles are used (robust=True), or the min and max of all values
             are used otherwise
+        force_row_height: if the specified row height is smaller than the estimated label height, it is set to the estimated label height, unless this flag is set to True
     """
     print('new barcode heatmap')
 
@@ -130,8 +141,11 @@ def barcode_heatmap(
             plot_stat.index.astype(str), curr_font_size)
     col_label_width, col_label_height = get_text_width_height(
             plot_stat.columns.astype(str), curr_font_size, target_axis='x')
-    height = (plot_stat.shape[0] * max(row_height_cm, row_label_height)
-              + col_label_height)
+    if force_row_height:
+        height = (plot_stat.shape[0] * row_height_cm + col_label_height)
+    else:
+        height = (plot_stat.shape[0] * max(row_height_cm, row_label_height)
+                  + col_label_height)
     width = row_label_width + (plot_stat.shape[1] * col_width_cm / 2.54) + colorbar_width_in
     colorbar_height_in = min(colorbar_height_in, height)
 
@@ -150,7 +164,7 @@ def barcode_heatmap(
         vmax = max(vmax, vlim[1])
 
     if plot_stat_is_divergent:
-        norm = MidpointNormalize(vmin=vmin, vmax=vmax, midpoint=0.)
+        norm = MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0.)
     else:
         # note: this block may be wrong and untested
         norm = None
@@ -161,28 +175,48 @@ def barcode_heatmap(
     cdg = co.ClusteredDataGrid(main_df=plot_stat)
     if cluster_features:
         if clusters_as_rows:
-            cdg.cluster_cols(method='average', metric='cityblock')
+            cdg.cluster_cols(method=method, metric=metric)
         else:
-            cdg.cluster_rows(method='average', metric='cityblock')
+            cdg.cluster_rows(method=method, metric=metric)
 
     # doesn't work well with these formulas
     # shrink = colorbar_height_in / height
     # aspect = colorbar_height_in / colorbar_width_in
     # other_cbar_args = dict(shrink=shrink, aspect=aspect)
 
+    if spaced_heatmap_kws is None:
+        heatmap = co.Heatmap(df=plot_stat,
+                             cmap=cmap,
+                             row_labels_show=row_labels_show,
+                             norm=norm,
+                             rasterized=rasterized,
+                             linewidth=linewidth,
+                             cbar_args=cbar_args,
+                             # cbar_args=other_cbar_args,
+                             edgecolor='white',
+                             **kwargs,
+                             )
+    else:
+        heatmap = co.SpacedHeatmap(
+                df=plot_stat,
+                pcolormesh_args=dict(
+                        cmap=cmap,
+                        norm=norm,
+                        rasterized=rasterized,
+                        linewidth=linewidth,
+                        edgecolor='white',
+                ),
+                show_row_labels=row_labels_show,
+                show_col_labels=True,
+                add_colorbar = True,
+                cbar_args=cbar_args,
+                **spaced_heatmap_kws,
+                # cbar_args=other_cbar_args,
+        )
+
     gm = cdg.plot_grid(grid=[
         [
-            co.Heatmap(df=plot_stat,
-                       cmap=cmap,
-                       row_labels_show=row_labels_show,
-                       norm=norm,
-                       rasterized=rasterized,
-                       linewidth=linewidth,
-                       cbar_args=cbar_args,
-                       # cbar_args=other_cbar_args,
-                       edgecolor='white',
-                       **kwargs,
-                       ),
+            heatmap,
         ]
     ],
             figsize=(width, height),
