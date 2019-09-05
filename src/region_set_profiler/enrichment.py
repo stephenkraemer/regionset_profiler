@@ -533,7 +533,7 @@ class ClusterOverlapStats:
         return self._odds_ratio
 
     def subset_hits(self, loc_arg) -> "ClusterOverlapStats":
-        print('WARNING: this is only subsets the hits, not the pvalues')
+        print("WARNING: this is only subsets the hits, not the pvalues")
         new_inst = copy(self)
         new_inst.hits = self.hits.loc[:, loc_arg].copy()
         return new_inst
@@ -645,7 +645,9 @@ class ClusterOverlapStats:
                     new_inst.cluster_pvalues.columns
                 ].copy()
             if new_inst._hits is not None:
-                new_inst._hits = new_inst._hits.loc[:, new_inst.cluster_pvalues.columns].copy()
+                new_inst._hits = new_inst._hits.loc[
+                    :, new_inst.cluster_pvalues.columns
+                ].copy()
         elif stat == "feature_pvalues":
             new_inst.feature_pvalues = new_inst.feature_pvalues.loc[
                 new_inst.feature_pvalues.lt(threshold)
@@ -659,7 +661,9 @@ class ClusterOverlapStats:
                     :, new_inst.feature_pvalues.index
                 ]
             if new_inst._hits is not None:
-                new_inst._hits = new_inst._hits.loc[:, new_inst.feature_pvalues.index].copy()
+                new_inst._hits = new_inst._hits.loc[
+                    :, new_inst.feature_pvalues.index
+                ].copy()
         else:
             raise NotImplementedError(f"Filtering stat stat {stat} not implemented")
         return new_inst
@@ -695,7 +699,7 @@ class ClusterOverlapStats:
             raise NotImplementedError(f"Rank-filtering on stat {stat} not implemented")
         return new_inst
 
-    def groupby_select(self, stat, by) -> 'ClusterOverlapStats':
+    def groupby_select(self, stat, by) -> "ClusterOverlapStats":
         # uid_mapping = {col_name: col_name + f'_{i}' for col_name, i in zip(self.hits.columns, range(len(self.hits.columns)))}
         # uid_reversal_mapping = {v: k for k, v in uid_mapping.items()}
         # new_inst = self.rename(columns=uid_mapping)
@@ -713,14 +717,14 @@ class ClusterOverlapStats:
                     new_inst.cluster_pvalues.columns
                 ].copy()
             if new_inst._hits is not None:
-                new_inst._hits = new_inst._hits.loc[:,
-                    new_inst.cluster_pvalues.columns
+                new_inst._hits = new_inst._hits.loc[
+                    :, new_inst.cluster_pvalues.columns
                 ].copy()
         else:
             raise NotImplementedError(f"Groupby-select on stat {stat} not implemented")
         return new_inst
 
-    def subset_cols(self, columns) -> 'ClusterOverlapStats':
+    def subset_cols(self, columns) -> "ClusterOverlapStats":
         new_inst = deepcopy(self)
         if new_inst.cluster_pvalues is not None:
             new_inst.cluster_pvalues = new_inst.cluster_pvalues.loc[:, columns]
@@ -852,14 +856,16 @@ def _run_bedtools_annotate(
     coverage_df.columns.name = "dataset"
     return coverage_df
 
-def hypergeometric_test(discovery_gene_names: Set, all_gene_names: Set, gmt_fp: str) -> pd.DataFrame:
+
+def hypergeometric_test(
+    discovery_gene_names: Set, all_gene_names: Set, gmt_fp: str
+) -> pd.DataFrame:
     """
 
     Returns:
         pd.DataFrame, columns:
 
     """
-
 
     assert isinstance(discovery_gene_names, set)
     assert isinstance(all_gene_names, set)
@@ -880,24 +886,25 @@ def hypergeometric_test(discovery_gene_names: Set, all_gene_names: Set, gmt_fp: 
     n_background_genes = len(background_genes)
     n_discovery_genes = len(discovery_gene_names)
 
-
     results_l = []
     for geneset_name, geneset_set in zip(geneset_names, geneset_sets):
-        res = {'geneset': geneset_name}
-        res['n_discovery_in_geneset'] = len(discovery_gene_names.intersection(geneset_set))
-        res['n_discovery_not_in_geneset'] = n_discovery_genes - res['n_discovery_in_geneset']
-        res['n_background_in_geneset'] = len(background_genes.intersection(geneset_set))
-        res['n_background_not_in_geneset'] = n_background_genes - res['n_background_in_geneset']
-        res['oddsratio'], res['p_value'] = fisher_exact([
+        res = {"geneset": geneset_name}
+        res["n_discovery_in_geneset"] = len(
+            discovery_gene_names.intersection(geneset_set)
+        )
+        res["n_discovery_not_in_geneset"] = (
+            n_discovery_genes - res["n_discovery_in_geneset"]
+        )
+        res["n_background_in_geneset"] = len(background_genes.intersection(geneset_set))
+        res["n_background_not_in_geneset"] = (
+            n_background_genes - res["n_background_in_geneset"]
+        )
+        res["oddsratio"], res["p_value"] = fisher_exact(
             [
-                res['n_discovery_in_geneset'],
-                res['n_discovery_not_in_geneset'],
-            ],
-            [
-                res['n_background_in_geneset'],
-                res['n_background_not_in_geneset'],
+                [res["n_discovery_in_geneset"], res["n_discovery_not_in_geneset"]],
+                [res["n_background_in_geneset"], res["n_background_not_in_geneset"]],
             ]
-        ])
+        )
         # this is the calculated oddsratio:
         # oddsratio = (
         #     (res['n_discovery_in_geneset'] / res['n_discovery_not_in_geneset'])
@@ -907,18 +914,12 @@ def hypergeometric_test(discovery_gene_names: Set, all_gene_names: Set, gmt_fp: 
         results_l.append(res)
 
     res_df = pd.DataFrame(results_l)
-    _, q_values, _, _ = multipletests(res_df['p_value'], method='fdr_bh')
-    res_df['q_values'] = q_values
-    res_df['log_oddsratio'] = np.log2(res_df['oddsratio'])
-    res_df['log10_qvalue'] = -np.log10(res_df['q_values'])
-    res_df['signed_log10_qvalue'] = np.sign(res_df['log_oddsratio']) * res_df['log10_qvalue']
+    _, q_values, _, _ = multipletests(res_df["p_value"], method="fdr_bh")
+    res_df["q_values"] = q_values
+    res_df["log_oddsratio"] = np.log2(res_df["oddsratio"])
+    res_df["log10_qvalue"] = -np.log10(res_df["q_values"])
+    res_df["signed_log10_qvalue"] = (
+        np.sign(res_df["log_oddsratio"]) * res_df["log10_qvalue"]
+    )
 
     return res_df
-
-
-
-
-
-
-
-

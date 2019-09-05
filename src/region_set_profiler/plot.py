@@ -15,8 +15,9 @@ import numpy as np
 import region_set_profiler as rsp
 
 
-def get_text_width_height(iterable: Iterable, font_size: float,
-                          target_axis: str = 'y') -> Tuple[float, float]:
+def get_text_width_height(
+    iterable: Iterable, font_size: float, target_axis: str = "y"
+) -> Tuple[float, float]:
     """Estimate width and height required for a sequence of labels in a plot
 
     This is intended to be used for axis tick labels.
@@ -33,16 +34,15 @@ def get_text_width_height(iterable: Iterable, font_size: float,
         width, height required for the labels
     """
 
-    height_cm = font_size * 1 / 72 + 2/72
+    height_cm = font_size * 1 / 72 + 2 / 72
     max_text_length = max([len(s) for s in iterable])
     max_width_cm = height_cm * 0.6 * max_text_length
-    if target_axis == 'y':
+    if target_axis == "y":
         return max_width_cm, height_cm
-    elif target_axis == 'x':
+    elif target_axis == "x":
         return height_cm, max_width_cm
     else:
-        raise ValueError(f'Unknown target axis {target_axis}')
-
+        raise ValueError(f"Unknown target axis {target_axis}")
 
 
 # https://matplotlib.org/3.1.0/tutorials/colors/colormapnorms.html
@@ -57,32 +57,35 @@ class MidpointNormalize(colors.Normalize):
         x, y = [self.vmin, self.vcenter, self.vmax], [0, 0.5, 1]
         return np.ma.masked_array(np.interp(value, x, y))
 
+
 # %% Plots
 # ==============================================================================
 
+
 def barcode_heatmap(
-        cluster_overlap_stats: rsp.ClusterOverlapStats,
-        plot_stat = 'p-value',
-        vmin = None,
-        vmax = None,
-        vmin_quantile=0.02,
-        vlim=None,
-        cluster_features = True,
-        spaced_heatmap_kws = None,
-        col_width_cm=2,
-        row_height_cm=0.2,
-        row_labels_show = True,
-        divergent_cmap = 'RdBu_r',
-        sequential_cmap = 'YlOrBr',
-        linewidth = 1,
-        rasterized = False,
-        cbar_args = None,
-        robust = True,
-        clusters_as_rows = False,
-        force_row_height = False,
-        metric = 'cityblock',
-        method = 'average',
-        **kwargs) -> Figure:
+    cluster_overlap_stats: rsp.ClusterOverlapStats,
+    plot_stat="p-value",
+    vmin=None,
+    vmax=None,
+    vmin_quantile=0.02,
+    vlim=None,
+    cluster_features=True,
+    spaced_heatmap_kws=None,
+    col_width_cm=2,
+    row_height_cm=0.2,
+    row_labels_show=True,
+    divergent_cmap="RdBu_r",
+    sequential_cmap="YlOrBr",
+    linewidth=1,
+    rasterized=False,
+    cbar_args=None,
+    robust=True,
+    clusters_as_rows=False,
+    force_row_height=False,
+    metric="cityblock",
+    method="average",
+    **kwargs,
+) -> Figure:
     """Barcode heatmap
 
     automatically normalizes to vcenter=0 if divergent stat, dont pass norm
@@ -98,10 +101,10 @@ def barcode_heatmap(
             are used otherwise
         force_row_height: if the specified row height is smaller than the estimated label height, it is set to the estimated label height, unless this flag is set to True
     """
-    print('new barcode heatmap')
+    print("new barcode heatmap")
 
-    colorbar_height_in = 2/2.54
-    colorbar_width_in = 0.7/2.54
+    colorbar_height_in = 2 / 2.54
+    colorbar_width_in = 0.7 / 2.54
 
     if cbar_args is None:
         # TODO extend='both' fails
@@ -110,21 +113,21 @@ def barcode_heatmap(
 
     # Get plot stat
     # --------------------------------------------------------------------------
-    if plot_stat == 'p-value':
+    if plot_stat == "p-value":
         # To visualize the p-values, we give log10(p-values) associated with
         # positive log-odds ratios a positive sign, while p-values associated
         # with depletion retain the negative sign
-        log10_pvalues = np.log10(cluster_overlap_stats.cluster_pvalues
-                                 + 1e-100)  # add small float to avoid inf values
+        log10_pvalues = np.log10(
+            cluster_overlap_stats.cluster_pvalues + 1e-100
+        )  # add small float to avoid inf values
         plot_stat = log10_pvalues * -np.sign(cluster_overlap_stats.log_odds_ratio)
 
-    elif plot_stat == 'log-odds':
+    elif plot_stat == "log-odds":
         plot_stat = cluster_overlap_stats.log_odds_ratio
 
     # Discard features with NA if we are clustering the features
     if cluster_features:
-        plot_stat = plot_stat.dropna(how='any', axis=1)
-
+        plot_stat = plot_stat.dropna(how="any", axis=1)
 
     # Create heatmap
     # --------------------------------------------------------------------------
@@ -136,17 +139,22 @@ def barcode_heatmap(
         plot_stat = plot_stat.T
 
     # Get plot dimensions
-    curr_font_size = mpl.rcParams['font.size']
+    curr_font_size = mpl.rcParams["font.size"]
     row_label_width, row_label_height = get_text_width_height(
-            plot_stat.index.astype(str), curr_font_size)
+        plot_stat.index.astype(str), curr_font_size
+    )
     col_label_width, col_label_height = get_text_width_height(
-            plot_stat.columns.astype(str), curr_font_size, target_axis='x')
+        plot_stat.columns.astype(str), curr_font_size, target_axis="x"
+    )
     if force_row_height:
-        height = (plot_stat.shape[0] * row_height_cm + col_label_height)
+        height = plot_stat.shape[0] * row_height_cm + col_label_height
     else:
-        height = (plot_stat.shape[0] * max(row_height_cm, row_label_height)
-                  + col_label_height)
-    width = row_label_width + (plot_stat.shape[1] * col_width_cm / 2.54) + colorbar_width_in
+        height = (
+            plot_stat.shape[0] * max(row_height_cm, row_label_height) + col_label_height
+        )
+    width = (
+        row_label_width + (plot_stat.shape[1] * col_width_cm / 2.54) + colorbar_width_in
+    )
     colorbar_height_in = min(colorbar_height_in, height)
 
     if vmin is None:
@@ -164,14 +172,14 @@ def barcode_heatmap(
         vmax = max(vmax, vlim[1])
 
     if plot_stat_is_divergent:
-        norm = MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0.)
+        norm = MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0.0)
     else:
         # note: this block may be wrong and untested
         norm = None
         # does not seem to be necessary?
         # cbar_args.update({'clim': (vmin, vmax)})
 
-    print('Clustered plot')
+    print("Clustered plot")
     cdg = co.ClusteredDataGrid(main_df=plot_stat)
     if cluster_features:
         if clusters_as_rows:
@@ -185,43 +193,41 @@ def barcode_heatmap(
     # other_cbar_args = dict(shrink=shrink, aspect=aspect)
 
     if spaced_heatmap_kws is None:
-        heatmap = co.Heatmap(df=plot_stat,
-                             cmap=cmap,
-                             row_labels_show=row_labels_show,
-                             norm=norm,
-                             rasterized=rasterized,
-                             linewidth=linewidth,
-                             cbar_args=cbar_args,
-                             # cbar_args=other_cbar_args,
-                             edgecolor='white',
-                             **kwargs,
-                             )
+        heatmap = co.Heatmap(
+            df=plot_stat,
+            cmap=cmap,
+            row_labels_show=row_labels_show,
+            norm=norm,
+            rasterized=rasterized,
+            linewidth=linewidth,
+            cbar_args=cbar_args,
+            # cbar_args=other_cbar_args,
+            edgecolor="white",
+            **kwargs,
+        )
     else:
         heatmap = co.SpacedHeatmap(
-                df=plot_stat,
-                pcolormesh_args=dict(
-                        cmap=cmap,
-                        norm=norm,
-                        rasterized=rasterized,
-                        linewidth=linewidth,
-                        edgecolor='white',
-                ),
-                show_row_labels=row_labels_show,
-                show_col_labels=True,
-                add_colorbar = True,
-                cbar_args=cbar_args,
-                **spaced_heatmap_kws,
-                # cbar_args=other_cbar_args,
+            df=plot_stat,
+            pcolormesh_args=dict(
+                cmap=cmap,
+                norm=norm,
+                rasterized=rasterized,
+                linewidth=linewidth,
+                edgecolor="white",
+            ),
+            show_row_labels=row_labels_show,
+            show_col_labels=True,
+            add_colorbar=True,
+            cbar_args=cbar_args,
+            **spaced_heatmap_kws,
+            # cbar_args=other_cbar_args,
         )
 
-    gm = cdg.plot_grid(grid=[
-        [
-            heatmap,
-        ]
-    ],
-            figsize=(width, height),
-            height_ratios=[(1, 'rel')],
-            row_dendrogram=False,
+    gm = cdg.plot_grid(
+        grid=[[heatmap]],
+        figsize=(width, height),
+        height_ratios=[(1, "rel")],
+        row_dendrogram=False,
     )
     gm.create_or_update_figure()
     return gm.fig
