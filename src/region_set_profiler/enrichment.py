@@ -11,15 +11,16 @@ from tempfile import TemporaryDirectory
 from time import time
 from typing import Union, List, Optional, Iterable, Any, Dict, Set
 
+import FisherExact as fe
 import more_itertools
 import numpy as np
 import pandas as pd
-import FisherExact as fe
 from joblib import Parallel, delayed
-from pandas.api.types import CategoricalDtype, is_int64_dtype
+from pandas.api.types import CategoricalDtype
 from scipy.stats import chi2_contingency, fisher_exact
 from scipy.stats.contingency import expected_freq
 from statsmodels.stats.multitest import multipletests
+
 
 # %%
 
@@ -858,36 +859,50 @@ def _run_bedtools_annotate(
 
 
 def hypergeometric_test(
-    discovery_gene_names: Set, all_gene_names: Set, gmt_fp: str
+    discovery_gene_names: Set,
+    all_gene_names: Set,
+    gmt_fp: str = None,
+    genesets: Dict[str, Set[str]] = None,
 ) -> pd.DataFrame:
     """
 
+    Specify the geneset database either via gmt_fp or via genesets
+
+    Args:
+        discovery_gene_names: discovered genes, eg. differentially methylated/expressed
+        all_gene_names: all genes which could have been discovered
+        gmt_fp: geneset database as GMT
+        genesets: geneset database as dict
+
     Returns:
         pd.DataFrame, columns:
+            - p_value
+            - oddsratio
+            - log_oddsratio
+            - q_value
+            - log10_qvalue
+            - signed_log10_qvalue
 
     """
 
     assert isinstance(discovery_gene_names, set)
     assert isinstance(all_gene_names, set)
 
-    # Read GMT: get a list of geneset names, and a list of the genes in each geneset
-    with open(gmt_fp) as fin:
-        geneset_lines = fin.readlines()
-
-    # GMT format: gene set name | optional description | gene1 | gene2 | gene 3
-    # tab-separated
-    # variable number of columns due variable gene set length
-
-    # For each geneset, get the name and all contained genes as set
-    geneset_names = [line.split("\t")[0] for line in geneset_lines]
-    geneset_sets = [set(line.rstrip().split("\t")[2:]) for line in geneset_lines]
+    if gmt_fp and genesets:
+        raise ValueError("Both gmt_fp and genesets given")
+    elif gmt_fp:
+        genesets = gmt_to_dict(gmt_fp)
+    elif genesets:
+        pass
+    else:
+        raise ValueError("Neither gmt_fp nor genesets specified")
 
     background_genes = all_gene_names.difference(discovery_gene_names)
     n_background_genes = len(background_genes)
     n_discovery_genes = len(discovery_gene_names)
 
     results_l = []
-    for geneset_name, geneset_set in zip(geneset_names, geneset_sets):
+    for geneset_name, geneset_set in genesets.items():
         res = {"geneset": geneset_name}
         res["n_discovery_in_geneset"] = len(
             discovery_gene_names.intersection(geneset_set)
@@ -923,3 +938,18 @@ def hypergeometric_test(
     )
 
     return res_df
+
+
+def gmt_to_dict(gmt_fp: str) -> Dict[str, Set[str]]:
+    """Read GMT format, return dict: geneset name -> set of gene identifiers"""
+    # Read GMT: get a list of geneset names, and a list of the genes in each geneset
+    with open(gmt_fp) as fin:
+        geneset_lines = fin.readlines()
+    # GMT format: gene set name | optional description | gene1 | gene2 | gene 3
+    # tab-separated
+    # variable number of columns due variable gene set length
+    # For each geneset, get the name and all contained genes as set
+    geneset_names = [line.split("\t")[0] for line in geneset_lines]
+    geneset_sets = [set(line.rstrip().split("\t")[2:]) for line in geneset_lines]
+    genesets = dict(zip(geneset_names, geneset_sets))
+    return genesets
