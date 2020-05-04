@@ -34,13 +34,13 @@ def get_text_width_height(
         width, height required for the labels
     """
 
-    height_cm = font_size * 1 / 72 + 2 / 72
+    height = font_size * 1 / 72 + 2 / 72
     max_text_length = max([len(s) for s in iterable])
-    max_width_cm = height_cm * 0.6 * max_text_length
+    max_width = height * 0.6 * max_text_length
     if target_axis == "y":
-        return max_width_cm, height_cm
+        return max_width, height
     elif target_axis == "x":
-        return height_cm, max_width_cm
+        return height, max_width
     else:
         raise ValueError(f"Unknown target axis {target_axis}")
 
