@@ -11,6 +11,7 @@ from region_set_profiler.plot import MidpointNormalize, get_text_width_height
 
 import numpy as np
 import pandas as pd
+
 # noinspection PyUnresolvedReferences
 import codaplot as co
 from pandas.api.types import CategoricalDtype
@@ -469,6 +470,12 @@ def new_barcode_heatmap(
     vmax: Optional[float] = None,
     vmin_quantile: Optional[float] = None,
     vmax_quantile: Optional[float] = None,
+    row_linkage=None,
+    col_linkage=None,
+    row_dendrogram=None,
+    col_dendrogram=None,
+    row_spacing_group_ids=None,
+    col_spacing_group_ids=None,
 ) -> Figure:
     """Visualize depletions and enrichments by combining p-values with a signed effect size stat
 
@@ -487,16 +494,28 @@ def new_barcode_heatmap(
         vmax: absolute vmax
         vmax_quantile: vmax quantile, only this or vmax can be defined
         vmin_quantile: vmin quantile, only this or vmin can be defined
+        row_linkage: if None, defaults to dict(method="average", metric="euclidean")
+            ie there is currently no way to turn this off (for backwards compatibility
+        col_linkage: if None, no clustering
+        row_dendrogram: passed to co.cross_plot
+        col_dendrogram: passed to co.cross_plot
+
     Returns:
         heatmap figure
+
+    Notes:
+        - size computation currently does not take dendrogram size into account,
+          it is only correct if no dendrograms are displayed. Same problem with spacers.
     """
     if pcolormesh_kwargs is None:
         pcolormesh_kwargs = dict(edgecolor="white", linewidth=0.1)
+    if row_linkage is None:
+        row_linkage = dict(method="average", metric="euclidean")
 
     # noinspection PyTypeChecker
     # add pseudocount to pvalues and use sign from directional_effect_size
     plot_stat = np.log10(pvalues + 1e-100) * -np.sign(directional_effect_size)
-    plot_stat = plot_stat.loc[pvalues.lt(pvalue_threshold).any(axis=1)]
+    plot_stat = plot_stat.loc[:, pvalues.lt(pvalue_threshold).any(axis=0)]
     # transpose prior to plotting
     plot_stat_t = plot_stat.T
     # co.heatmap does not work with integer columns index
@@ -506,17 +525,16 @@ def new_barcode_heatmap(
     figsize_t = _get_barcode_fig_height_width(
         plot_stat_t, height_per_row, width_per_col
     )
-    
+
     if vmin is not None and vmin_quantile is not None:
         raise ValueError()
     elif vmin_quantile is not None:
-        vmin=np.percentile(plot_stat_t.to_numpy(), vmin_quantile*100)
+        vmin = np.percentile(plot_stat_t.to_numpy(), vmin_quantile * 100)
 
     if vmax is not None and vmax_quantile is not None:
         raise ValueError()
     elif vmax_quantile is not None:
-        vmax=np.percentile(plot_stat_t.to_numpy(), vmax_quantile*100)
-
+        vmax = np.percentile(plot_stat_t.to_numpy(), vmax_quantile * 100)
 
     # plot standard heatmap, no dendrogram
     array_to_figure_res, plot_arr = co.cross_plot(
@@ -535,8 +553,14 @@ def new_barcode_heatmap(
         figsize=figsize_t,
         constrained_layout=True,
         layout_pads=dict(wspace=0, hspace=0, h_pad=0, w_pad=0),
-        row_linkage=dict(method="average", metric="euclidean"),
-        row_dendrogram=False,
+        row_linkage=row_linkage,
+        col_linkage=col_linkage,
+        row_dendrogram=row_dendrogram,
+        col_dendrogram=col_dendrogram,
+        row_spacing_group_ids=row_spacing_group_ids,
+        row_spacer_sizes=0.02,
+        col_spacing_group_ids=col_spacing_group_ids,
+        col_spacer_sizes=0.02,
     )
 
     return array_to_figure_res["fig"]
