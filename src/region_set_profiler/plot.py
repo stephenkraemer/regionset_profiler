@@ -101,7 +101,7 @@ def barcode_heatmap(
             are used otherwise
         force_row_height: if the specified row height is smaller than the estimated label height, it is set to the estimated label height, unless this flag is set to True
     """
-    print("new barcode heatmap")
+    # print("new barcode heatmap")
 
     colorbar_height_in = 2 / 2.54
     colorbar_width_in = 0.7 / 2.54
@@ -179,7 +179,7 @@ def barcode_heatmap(
         # does not seem to be necessary?
         # cbar_args.update({'clim': (vmin, vmax)})
 
-    print("Clustered plot")
+    # print("Clustered plot")
     cdg = co.ClusteredDataGrid(main_df=plot_stat)
     if cluster_features:
         if clusters_as_rows:

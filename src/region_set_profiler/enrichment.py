@@ -74,17 +74,17 @@ class OverlapStatsABC(ABC):
 
         if index is not None:
             bool_coverage_df = bool_coverage_df.loc[index, :]
+            cluster_ids = cluster_ids.loc[index]
             # Assert that the index did not have query regions not contained
             # in the coverage df. In future pandas versions, this should raise a
             # KeyError, then this assertiong can be removed.
             assert not bool_coverage_df.isna().any(axis=None)
-            coverage_groupby = bool_coverage_df.groupby(cluster_ids)
         elif regions is not None:
             raise NotImplementedError
         else:
-            coverage_groupby = bool_coverage_df.groupby(cluster_ids)
+            pass
 
-        cluster_counts = coverage_groupby.sum()
+        cluster_counts = bool_coverage_df.groupby(cluster_ids).sum()
         cluster_sizes = cluster_ids.value_counts().sort_index()
         cluster_sizes.index.name = "cluster_id"
         cluster_sizes.name = "Frequency"
@@ -509,7 +509,6 @@ class ClusterOverlapStats:
         regions.
         """
         if self._odds_ratio is None:
-            print("recompute")
             # fg_and_hit = self.hits.values
             # total_hits_per_dataset = self.hits.sum(axis=0).values
             # cluster_sizes_col_vector = self.cluster_sizes.values[:, np.newaxis]
@@ -558,7 +557,7 @@ class ClusterOverlapStats:
         Returns:
             p-value, q-value and other stats per database file
         """
-        print("updated")
+        # print("updated")
         if test_args is None:
             test_args = {}
         # Using simple integer seeds led to weird results, so no
@@ -757,7 +756,7 @@ def fisher(hits, cluster_sizes, test_args, cores):
         slice(l[0], l[-1] + 1)
         for l in more_itertools.chunked(np.arange(hits.shape[1]), cores)
     ]
-    print("Starting fisher test")
+    # print("Starting fisher test")
     t1 = time()
     pvalues_partial_dfs = Parallel(cores)(
         delayed(_run_fisher_exact_test_in_parallel_loop)(
@@ -767,7 +766,7 @@ def fisher(hits, cluster_sizes, test_args, cores):
         )
         for curr_slice in slices
     )
-    print("Took ", (time() - t1) / 60, " min")
+    # print("Took ", (time() - t1) / 60, " min")
     pvalues = pd.concat(pvalues_partial_dfs, axis=0).sort_index()
     return pvalues
 
