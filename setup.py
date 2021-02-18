@@ -8,7 +8,7 @@ setup(
         license='MIT',
         package_dir={'': 'src'},
         packages = find_packages(where='src', exclude=['contrib', 'docs', 'tests*']),
-        python_requires='>=3.6',
+        python_requires='>=3.8',
         install_requires=[
             'scipy',
             'statsmodels',
