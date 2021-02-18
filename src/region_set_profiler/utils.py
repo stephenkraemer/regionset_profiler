@@ -1,9 +1,12 @@
+import pickle
 import re
+
 import pandas as pd
 
 
 def parquet(fp, suffix=".p"):
     return re.sub(f"{suffix}$", ".parquet", fp)
+
 
 def p(fp, suffix=".tsv"):
     return re.sub(f"{suffix}$", ".p", fp)
@@ -26,3 +29,13 @@ def assert_granges_are_sorted(df: pd.DataFrame):
         .all()
         .all()
     )
+
+
+def to_pickle(obj, fp, protocol=4):
+    with open(fp, "wb") as fout:
+        pickle.dump(obj, fout, protocol=protocol)
+
+
+def from_pickle(fp):
+    with open(fp, "rb") as fin:
+        return pickle.load(fin)
