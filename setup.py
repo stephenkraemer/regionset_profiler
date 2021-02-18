@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import find_packages, setup
 
 setup(
         name='region_set_profiler',
@@ -7,14 +7,13 @@ setup(
         author_email='stephenkraemer@gmail.com',
         license='MIT',
         package_dir={'': 'src'},
-        packages=['region_set_profiler'],
+        packages = find_packages(where='src', exclude=['contrib', 'docs', 'tests*']),
         python_requires='>=3.6',
         install_requires=[
             'scipy',
             'statsmodels',
-            'FisherExact',
             'numpy',
-            'pandas>=0.23.4',
+            'pandas',
             'more_itertools',
         ],
         extras_require={

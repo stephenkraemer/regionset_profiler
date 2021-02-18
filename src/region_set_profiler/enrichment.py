@@ -11,7 +11,9 @@ from tempfile import TemporaryDirectory
 from time import time
 from typing import Union, List, Optional, Iterable, Any, Dict, Set
 
-import FisherExact as fe
+# FisherExact package cannot be installed with recent numpy versions, still need to have a look at this
+# this is only used for per-feature tests, which have never been used in real life anyway
+# import FisherExact as fe
 import more_itertools
 import numpy as np
 import pandas as pd
@@ -21,8 +23,7 @@ from scipy.stats import chi2_contingency, fisher_exact
 from scipy.stats.contingency import expected_freq
 from statsmodels.stats.multitest import multipletests
 
-
-# %%
+fisher_exact_package_error_msg = 'FisherExact package cannot be installed with recent numpy versions, still need to have a look at this'
 
 
 class OverlapStatsABC(ABC):
@@ -557,6 +558,7 @@ class ClusterOverlapStats:
         Returns:
             p-value, q-value and other stats per database file
         """
+        raise NotImplementedError(fisher_exact_package_error_msg)
         # print("updated")
         if test_args is None:
             test_args = {}
@@ -752,6 +754,7 @@ def chi_square(hits, cluster_sizes):
 
 
 def fisher(hits, cluster_sizes, test_args, cores):
+    raise NotImplementedError(fisher_exact_package_error_msg)
     slices = [
         slice(l[0], l[-1] + 1)
         for l in more_itertools.chunked(np.arange(hits.shape[1]), cores)
@@ -772,6 +775,7 @@ def fisher(hits, cluster_sizes, test_args, cores):
 
 
 def _run_fisher_exact_test_in_parallel_loop(df, cluster_sizes, test_args):
+    raise NotImplementedError(fisher_exact_package_error_msg)
     fn = lambda ser: fe.fisher_exact(
         [ser.tolist(), (cluster_sizes - ser).tolist()], **test_args
     )
@@ -780,6 +784,7 @@ def _run_fisher_exact_test_in_parallel_loop(df, cluster_sizes, test_args):
 
 
 def hybrid_cont_table_test(hits, cluster_sizes, test_args, cores):
+    raise NotImplementedError(fisher_exact_package_error_msg)
 
     # ignore hits without any counts
     no_counts = hits.sum().eq(0)
