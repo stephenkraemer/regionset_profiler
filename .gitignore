@@ -5,3 +5,5 @@
 src/region_set_profiler/__pycache__/
 src/region_set_profiler.egg-info/
 tests/.pytest_cache/
+.virtual_documents/
+**/.ipynb_checkpoints/
