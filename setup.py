@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
         name='region_set_profiler',
-        version='0.1',
+        version='0.2.0',
         author='Stephen Kraemer',
         author_email='stephenkraemer@gmail.com',
         license='MIT',
@@ -11,7 +11,7 @@ setup(
         python_requires='>=3.8',
         install_requires=[
             'attrs',
-            'codaplot @ git+https://github.com/stephenkraemer/codaplot.git',
+            'codaplot @ git+https://github.com/stephenkraemer/codaplot.git@0.2.0',
             'joblib',
             'more_itertools',
             'numpy',
