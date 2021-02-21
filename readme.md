@@ -28,7 +28,7 @@ The package requires python >= 3.8 (see setup.py for all requirements). We recom
 ```
 conda create -n regionset_profiler python=3.8
 conda activate regionset_profiler
-pip install git+https://github.com/stephenkraemer/regionset_profiler.git@v0.2
+pip install git+https://github.com/stephenkraemer/regionset_profiler.git@0.2.0
 ```
 
 # Supported operating systems
