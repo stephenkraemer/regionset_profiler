@@ -6,13 +6,13 @@ Common to all analyses in this package is the notion of comparing a set of regio
 
 1. Comparison within an experimental universe. In modern studies, we often have large datasets covering many considerably different biological populations (or single cells which can be grouped in various distinct clusters). For example, a dataset may characterize various distinct hematopoietic populations. Such studies typically aim to find and characterize various sets of ROIs characterizing different populations. In these cases, often the set of all identified ROIs can serve as a background against which individual ROI subsets are compared. Such tests answer the question: what distinguishes the ROI set characterizing population A from the ROIs observed in other populations?
 2. When the experimental design is not compatible with performing comparisons within the universe of experimentally observed ROIs, two approaches are supported:
-  2.1 Translate the observed ROIs into a set of associated genes and perform standard overrepresentation enrichment analysis.
-  2.2 Compare the observed ROIs against a simulated background (this is a work in progress in this package!).
+    1. Translate the observed ROIs into a set of associated genes and perform standard overrepresentation enrichment analysis.
+    2. Compare the observed ROIs against a simulated background (this is a work in progress in this package!).
 
 
 # Package maturity
 
-This package is unreleased, unpublished pre-alpha software, but it is relatively mature and stable. We use it often in in-house projects, but cannot yet provide support for external users. Also, given the pre-alpha status, we do change the API from time to time, without regard for health and safety of external users.
+This package is unreleased and unpublished software, but we use it often in in-house projects. We can not yet provide support for external users. Also, given the development status, we do change the API from time to time, without regard for health and safety of external users.
 
 
 # Installation

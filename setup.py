@@ -10,11 +10,14 @@ setup(
         packages = find_packages(where='src', exclude=['contrib', 'docs', 'tests*']),
         python_requires='>=3.8',
         install_requires=[
-            'scipy',
-            'statsmodels',
+            'attrs',
+            'codaplot @ git+https://github.com/stephenkraemer/codaplot.git',
+            'joblib',
+            'more_itertools',
             'numpy',
             'pandas',
-            'more_itertools',
+            'scipy',
+            'statsmodels',
         ],
         extras_require={
             'dev': [
