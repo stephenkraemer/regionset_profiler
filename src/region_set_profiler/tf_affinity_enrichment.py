@@ -466,6 +466,7 @@ def new_barcode_heatmap(
     heatmap_kwargs: Optional[Dict] = None,
     width_per_col: Optional[float] = None,
     height_per_row: Optional[float] = None,
+    figsize: Optional[Tuple[float, float]] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     vmin_quantile: Optional[float] = None,
@@ -486,9 +487,10 @@ def new_barcode_heatmap(
         pvalue_threshold: float
         directional_effect_size: df of any signed stat, eg log-odds, group // motif
         width_per_col: used to compute fig width, width for one column of the main heatmap
-            if not given, use the ticklabel width (current implementation is suboptimal)
+            if not given, use the ticklabel width (current implementation is suboptimal), alternatively, specify figsize
         height_per_row: used to compute fig height, height for one row of the main heatmap.
-            if not given, use the ticklabel height
+            if not given, use the ticklabel height, alternatively, specify figsize
+        figsize: used if height_per_row and or width_per_col are not given
         pcolormesh_kwargs: if None, defaults to dict(edgecolor = 'white', linewidth = 0.1)
         vmin: absolute vmin
         vmax: absolute vmax
@@ -522,9 +524,12 @@ def new_barcode_heatmap(
     plot_stat_t.columns = plot_stat_t.columns.astype(str)
 
     # get figsize, considers ticklabel sizes, but not cbar size atm
-    figsize_t = _get_barcode_fig_height_width(
-        plot_stat_t, height_per_row, width_per_col
-    )
+    if width_per_col and height_per_row:
+        figsize_t = _get_barcode_fig_height_width(
+            plot_stat_t, height_per_row, width_per_col
+        )
+    else:
+        figsize_t = figsize
 
     if vmin is not None and vmin_quantile is not None:
         raise ValueError()
@@ -561,6 +566,10 @@ def new_barcode_heatmap(
         col_spacing_group_ids=col_spacing_group_ids,
         col_spacer_sizes=0.02,
         legend_size=(0.05, 'rel'),
+        legend_args=dict(
+            cbar_title_as_label=True,
+            # ypad_in=ypad_in,
+        ),
     )
 
     return array_to_figure_res["fig"]
