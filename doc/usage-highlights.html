@@ -1,0 +1,761 @@
+<section id="introduction" class="cell markdown">
+<h1>Introduction</h1>
+</section>
+<section id="package-features" class="cell markdown">
+<h2>Package features</h2>
+</section>
+<div class="cell markdown">
+<p>This package provides functionality to characterize sets of genomic regions. One or more sets of genomic regions are analyzed for the strength and significance of their association with certain biological features. This includes adjacency to genes from meaningful genesets and overlap with genomic regions such as ChIP-Seq peaks or predicted TFBS.</p>
+<p>Common to all analyses in this package is the notion of comparing a set of regions of interest (ROIs) with a set of background regions, in order to find out whether a biological feature is enriched or depleted in the ROIs compared to the background. Different scenarios are supported:</p>
+<ol>
+<li>Comparison within an experimental universe. In modern studies, we often have large datasets covering many considerably different biological populations (or single cells which can be grouped in various distinct clusters). For example, a dataset may characterize various distinct hematopoietic populations. Such studies typically aim to find and characterize various sets of ROIs characterizing different populations. In these cases, often the set of all identified ROIs can serve as a background against which individual ROI subsets are compared. Such tests answer the question: what distinguishes the ROI set characterizing population A from the ROIs observed in other populations?</li>
+<li>When the experimental design is not compatible with performing comparisons within the universe of experimentally observed ROIs, two approaches are supported:
+<ol>
+<li>Translate the observed ROIs into a set of associated genes and perform standard overrepresentation enrichment analysis.</li>
+<li>Compare the observed ROIs against a simulated background (work in progress).</li>
+</ol></li>
+</ol>
+</div>
+<section id="package-maturity" class="cell markdown">
+<h2>Package maturity</h2>
+</section>
+<div class="cell markdown">
+<p>This package is unreleased and unpublished software, but we use it often in in-house projects. We can not yet provide support for external users. Also, we do change the API from time to time, without regard for health and safety of external users. Given this development stage, we also do not yet provide a complete documentation.</p>
+</div>
+<section id="content-of-this-vignette" class="cell markdown">
+<h2>Content of this vignette</h2>
+</section>
+<div class="cell markdown">
+<p>This vignette is not meant as a complete documentation of all package features (cf. package maturity above). Rather, this notebook is intended to showcase how the package was used to perform some recently published analyses, in order to make the performed analyses more transparent.</p>
+</div>
+<section id="imports" class="cell markdown">
+<h1>Imports</h1>
+</section>
+<div class="cell markdown">
+<p>Run these imports prior to all examples</p>
+</div>
+<div class="cell code" data-execution_count="1">
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pandas <span class="im">as</span> pd</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> region_set_profiler <span class="im">as</span> rsp</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> codaplot <span class="im">as</span> co</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> matplotlib.pyplot <span class="im">as</span> plt</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> statsmodels.stats.multitest <span class="im">import</span> multipletests</span></code></pre></div>
+</div>
+<div class="cell code" data-execution_count="2">
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="op">%</span>matplotlib inline</span></code></pre></div>
+</div>
+<div class="cell code" data-execution_count="3">
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> mht_correction(p_value_df):</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    pvals_corrected <span class="op">=</span> multipletests(</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>        p_value_df.to_numpy().flatten(order<span class="op">=</span><span class="st">&quot;C&quot;</span>),</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>        method<span class="op">=</span><span class="st">&quot;fdr_bh&quot;</span>,</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>        returnsorted<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    )[<span class="dv">1</span>]</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    q_value_df <span class="op">=</span> pd.DataFrame(</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>        pvals_corrected.reshape(p_value_df.shape),</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>        index<span class="op">=</span>p_value_df.index,</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>        columns<span class="op">=</span>p_value_df.columns,</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> q_value_df</span></code></pre></div>
+</div>
+<section id="enrichments-within-an-experimental-universe" class="cell markdown">
+<h1>Enrichments within an experimental universe</h1>
+</section>
+<div class="cell markdown">
+<p>See introduction above - these tools are meant to characterize subsets of large sets of ROIs against each other.</p>
+</div>
+<section id="test-for-association-with-genesets" class="cell markdown">
+<h2>Test for association with genesets</h2>
+</section>
+<div class="cell markdown">
+<p>In this analysis type, we are interested in testing whether subsets of ROIs from a large experimental universe are significantly associated with certain genesets, i.e. whether the ROI subsets are in proximity of the genes of certain genesets more often than the background regions.</p>
+</div>
+<section id="preparation-of-input-data" class="cell markdown">
+<h3>Preparation of input data</h3>
+</section>
+<div class="cell markdown">
+<p>What is sufficient proximity to associate a genomic region with a certain gene? It will depend on the question at hand. Therefore, regionset_profiler makes no attempt at providing a general solution. Rather, the user provides a gene annotation for all ROIs, and decides about how to filter for biological meaningful proximity. regionset_profiler expects only the following information as a result of this analysis: a Series mapping each ROI to be used in the test to a gene.</p>
+</div>
+<div class="cell markdown">
+<p>For this vignette, we provide 3,000 clustered toy DMRs (differentially methylated regions), placed (with considerable noise) in proximity of characteristic genes of four hematopoietic populations (real world datasets in this analysis type would be much larger, of course). Can we find out which DMR cluster belongs to which population?</p>
+</div>
+<div class="cell markdown">
+<p>For this example, gene annotation has already been performed. You can use any decent gene annotation tool of your liking and adapt gene annotations in any way you see fit to get a set of ROI-to-gene annotations with some confidence. In this case, we used our in-house tool <a href="https://github.com/stephenkraemer/gtfanno">gftanno</a>, but again this should be chosen on a case-by-case basis.</p>
+</div>
+<div class="cell markdown">
+<p>Here are the annoteted DMRs</p>
+</div>
+<div class="cell code" data-execution_count="4">
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>simulated_dmr_clusters <span class="op">=</span> pd.read_pickle(<span class="st">&quot;simulated_dmr_clusters.p&quot;</span>)</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>simulated_dmr_clusters.head(<span class="dv">5</span>)</span></code></pre></div>
+<div class="output execute_result" data-execution_count="4">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th></th>
+      <th></th>
+      <th>Gene</th>
+      <th>GenomicRegion</th>
+      <th>ClusterID</th>
+    </tr>
+    <tr>
+      <th>Chromosome</th>
+      <th>Start</th>
+      <th>End</th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="5" valign="top">1</th>
+      <th>7139742</th>
+      <th>7139990</th>
+      <td>Gm26983</td>
+      <td>Promoter</td>
+      <td>C1</td>
+    </tr>
+    <tr>
+      <th>9548071</th>
+      <th>9548115</th>
+      <td>Adhfe1</td>
+      <td>Promoter</td>
+      <td>C2</td>
+    </tr>
+    <tr>
+      <th>10316090</th>
+      <th>10316863</th>
+      <td></td>
+      <td>intergenic</td>
+      <td>C2</td>
+    </tr>
+    <tr>
+      <th>16297792</th>
+      <th>16297835</th>
+      <td>Stau2</td>
+      <td>intron</td>
+      <td>C3</td>
+    </tr>
+    <tr>
+      <th>33482222</th>
+      <th>33482405</th>
+      <td>Gm29228</td>
+      <td>Promoter</td>
+      <td>C2</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="cell markdown">
+<p>This dataframe contains annotations to a gene (if possible) and genomic region (promoter, intron, exon etc.) as described here: <a href="https://github.com/stephenkraemer/gtfanno">gtfanno</a>. It's up to you to decide which annotations you want to consider. All of them? Or just the promoter annotations? Let's use everything within a gene or within a Promoter, and exclude everything else (for example intergenic DMRs which could not be associated with a gene). The further away from a gene we are, the less confidence we have in the annotations... Of course, if you had 4C data etc., you would integrate this at this step to get better annotations!</p>
+</div>
+<div class="cell code" data-execution_count="5">
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>dmrs_filtered <span class="op">=</span> simulated_dmr_clusters.loc[</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    simulated_dmr_clusters[<span class="st">&quot;GenomicRegion&quot;</span>].isin(</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>        [<span class="st">&quot;Promoter&quot;</span>, <span class="st">&quot;5&#39;-UTR&quot;</span>, <span class="st">&quot;3&#39;-UTR&quot;</span>, <span class="st">&quot;intron&quot;</span>, <span class="st">&quot;exon&quot;</span>]</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>]</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>dmrs_filtered</span></code></pre></div>
+<div class="output execute_result" data-execution_count="5">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th></th>
+      <th></th>
+      <th>Gene</th>
+      <th>GenomicRegion</th>
+      <th>ClusterID</th>
+    </tr>
+    <tr>
+      <th>Chromosome</th>
+      <th>Start</th>
+      <th>End</th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="5" valign="top">1</th>
+      <th>7139742</th>
+      <th>7139990</th>
+      <td>Gm26983</td>
+      <td>Promoter</td>
+      <td>C1</td>
+    </tr>
+    <tr>
+      <th>9548071</th>
+      <th>9548115</th>
+      <td>Adhfe1</td>
+      <td>Promoter</td>
+      <td>C2</td>
+    </tr>
+    <tr>
+      <th>16297792</th>
+      <th>16297835</th>
+      <td>Stau2</td>
+      <td>intron</td>
+      <td>C3</td>
+    </tr>
+    <tr>
+      <th>33482222</th>
+      <th>33482405</th>
+      <td>Gm29228</td>
+      <td>Promoter</td>
+      <td>C2</td>
+    </tr>
+    <tr>
+      <th>33594864</th>
+      <th>33596335</th>
+      <td>Prim2</td>
+      <td>intron</td>
+      <td>C3</td>
+    </tr>
+    <tr>
+      <th>...</th>
+      <th>...</th>
+      <th>...</th>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+    </tr>
+    <tr>
+      <th rowspan="5" valign="top">9</th>
+      <th>121008086</th>
+      <th>121008374</th>
+      <td>Ulk4</td>
+      <td>intron</td>
+      <td>C3</td>
+    </tr>
+    <tr>
+      <th>121379312</th>
+      <th>121379380</th>
+      <td>Trak1</td>
+      <td>Promoter</td>
+      <td>C2</td>
+    </tr>
+    <tr>
+      <th>121896742</th>
+      <th>121897004</th>
+      <td>Ackr2</td>
+      <td>Promoter</td>
+      <td>C3</td>
+    </tr>
+    <tr>
+      <th>123078354</th>
+      <th>123078533</th>
+      <td>Zdhhc3</td>
+      <td>intron</td>
+      <td>C2</td>
+    </tr>
+    <tr>
+      <th>123186193</th>
+      <th>123186646</th>
+      <td>Cdcp1</td>
+      <td>intron</td>
+      <td>C2</td>
+    </tr>
+  </tbody>
+</table>
+<p>2241 rows × 3 columns</p>
+</div>
+</div>
+</div>
+<div class="cell markdown">
+<p>These are the regions we want to use for our enrichment analysis!</p>
+</div>
+<div class="cell markdown">
+<p>Next, we need to define the genesets we are interested in. These files should be in the common GMT format (which is for example the format used by MSIGDB). For this demo, we have prepared some <a href="marker-genes-100.gmt">marker genesets for hematopoietic populations</a></p>
+</div>
+<section id="test-and-quantify-association" class="cell markdown">
+<h3>Test and quantify association</h3>
+</section>
+<div class="cell markdown">
+<p>We start by generating a GenesetOverlapStats object (if we were interested in comparing against other genomic intervals instead of regions, we would create a OverlapStats object instead).</p>
+</div>
+<div class="cell code" data-execution_count="6">
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>overlap_stats <span class="op">=</span> rsp.GenesetOverlapStats(</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    annotations<span class="op">=</span>dmrs_filtered[<span class="st">&quot;Gene&quot;</span>].<span class="bu">str</span>.upper(), genesets_fp<span class="op">=</span><span class="st">&quot;marker-genes-100.gmt&quot;</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<div class="cell markdown">
+<p>We can use the compute method to identify overlaps between ROIs and the genesets:</p>
+</div>
+<div class="cell code" data-execution_count="7">
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>overlap_stats.compute()</span></code></pre></div>
+</div>
+<div class="cell markdown">
+<p>The result is a coverage df, detailing for each ROI whether it is in proximity to a gene from a geneset:</p>
+</div>
+<div class="cell code" data-execution_count="8">
+<div class="sourceCode" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>overlap_stats.coverage_df</span></code></pre></div>
+<div class="output execute_result" data-execution_count="8">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th></th>
+      <th></th>
+      <th>B-cells</th>
+      <th>CFU-E</th>
+      <th>HSC</th>
+      <th>Neutrophils</th>
+      <th>Monocytes</th>
+    </tr>
+    <tr>
+      <th>Chromosome</th>
+      <th>Start</th>
+      <th>End</th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="5" valign="top">1</th>
+      <th>7139742</th>
+      <th>7139990</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>9548071</th>
+      <th>9548115</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>16297792</th>
+      <th>16297835</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>33482222</th>
+      <th>33482405</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>33594864</th>
+      <th>33596335</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>...</th>
+      <th>...</th>
+      <th>...</th>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+    </tr>
+    <tr>
+      <th rowspan="5" valign="top">9</th>
+      <th>121008086</th>
+      <th>121008374</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>121379312</th>
+      <th>121379380</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>121896742</th>
+      <th>121897004</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>123078354</th>
+      <th>123078533</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>123186193</th>
+      <th>123186646</th>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+<p>2241 rows × 5 columns</p>
+</div>
+</div>
+</div>
+<div class="cell markdown">
+<p>There are no hits in the head and tail - how many are there overall?</p>
+</div>
+<div class="cell code" data-execution_count="9">
+<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>overlap_stats.coverage_df.<span class="bu">sum</span>()</span></code></pre></div>
+<div class="output execute_result" data-execution_count="9">
+<pre><code>B-cells        16
+CFU-E           7
+HSC            21
+Neutrophils     9
+Monocytes       9
+dtype: int64</code></pre>
+</div>
+</div>
+<div class="cell markdown">
+<p>Next, we use the cluster information to aggregate this hits per cluster</p>
+</div>
+<div class="cell code" data-execution_count="11">
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>cluster_overlap_stats <span class="op">=</span> overlap_stats.aggregate(dmrs_filtered[<span class="st">&quot;ClusterID&quot;</span>])</span></code></pre></div>
+</div>
+<div class="cell code" data-execution_count="12">
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>cluster_overlap_stats.hits</span></code></pre></div>
+<div class="output execute_result" data-execution_count="12">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>B-cells</th>
+      <th>CFU-E</th>
+      <th>HSC</th>
+      <th>Neutrophils</th>
+      <th>Monocytes</th>
+    </tr>
+    <tr>
+      <th>cluster_id</th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>C1</th>
+      <td>4</td>
+      <td>4</td>
+      <td>17</td>
+      <td>1</td>
+      <td>1</td>
+    </tr>
+    <tr>
+      <th>C2</th>
+      <td>1</td>
+      <td>0</td>
+      <td>0</td>
+      <td>8</td>
+      <td>5</td>
+    </tr>
+    <tr>
+      <th>C3</th>
+      <td>11</td>
+      <td>3</td>
+      <td>4</td>
+      <td>0</td>
+      <td>3</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="cell markdown">
+<p>We already have an intuition now - look like cluster C3 is associated with B cell marker genes, cluster C1 with HSC markers and cluster C2 with Neutrophil markers. But this needs to be tested. Let's test this, using the two-sided Fisher's exact test by default!</p>
+</div>
+<div class="cell code" data-execution_count="13">
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>cluster_overlap_stats.test_per_cluster_per_feature()</span></code></pre></div>
+</div>
+<div class="cell markdown">
+<p>The p-values are here:</p>
+</div>
+<div class="cell code" data-execution_count="14">
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>cluster_overlap_stats.cluster_pvalues</span></code></pre></div>
+<div class="output execute_result" data-execution_count="14">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>B-cells</th>
+      <th>CFU-E</th>
+      <th>HSC</th>
+      <th>Neutrophils</th>
+      <th>Monocytes</th>
+    </tr>
+    <tr>
+      <th>cluster_id</th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>C1</th>
+      <td>0.445164</td>
+      <td>0.251156</td>
+      <td>0.000022</td>
+      <td>0.172590</td>
+      <td>0.172590</td>
+    </tr>
+    <tr>
+      <th>C2</th>
+      <td>0.028799</td>
+      <td>0.103667</td>
+      <td>0.000282</td>
+      <td>0.000826</td>
+      <td>0.163533</td>
+    </tr>
+    <tr>
+      <th>C3</th>
+      <td>0.004754</td>
+      <td>0.686885</td>
+      <td>0.245615</td>
+      <td>0.065344</td>
+      <td>1.000000</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="cell markdown">
+<p>And here are the log-odds ratios:</p>
+</div>
+<div class="cell code" data-execution_count="15">
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>cluster_overlap_stats.log_odds_ratio</span></code></pre></div>
+<div class="output execute_result" data-execution_count="15">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>B-cells</th>
+      <th>CFU-E</th>
+      <th>HSC</th>
+      <th>Neutrophils</th>
+      <th>Monocytes</th>
+    </tr>
+    <tr>
+      <th>cluster_id</th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>C1</th>
+      <td>-0.506878</td>
+      <td>1.202550</td>
+      <td>2.751653</td>
+      <td>-1.299779</td>
+      <td>-1.299779</td>
+    </tr>
+    <tr>
+      <th>C2</th>
+      <td>-1.975638</td>
+      <td>-1.969892</td>
+      <td>-3.442843</td>
+      <td>3.221577</td>
+      <td>1.305871</td>
+    </tr>
+    <tr>
+      <th>C3</th>
+      <td>2.104289</td>
+      <td>0.767077</td>
+      <td>-0.769356</td>
+      <td>-2.243714</td>
+      <td>0.279752</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="cell markdown">
+<p>Finally, perform MHT correction:</p>
+</div>
+<div class="cell code" data-execution_count="16">
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>q_values <span class="op">=</span> mht_correction(cluster_overlap_stats.cluster_pvalues)</span></code></pre></div>
+</div>
+<section id="visualize-the-results" class="cell markdown">
+<h3>Visualize the results</h3>
+</section>
+<section id="log-odds" class="cell markdown">
+<h4>Log-odds</h4>
+</section>
+<div class="cell markdown">
+<p>Let's first look at the log-odds ratios:</p>
+</div>
+<div class="cell code" data-execution_count="17">
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>fig, ax <span class="op">=</span> plt.subplots(<span class="dv">1</span>, <span class="dv">1</span>)</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>_ <span class="op">=</span> co.heatmap(</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    df<span class="op">=</span>cluster_overlap_stats.log_odds_ratio,</span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>    ax<span class="op">=</span>ax,</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>    xticklabels<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>    yticklabels<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>    yticklabel_side<span class="op">=</span><span class="st">&#39;left&#39;</span>,</span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>    cmap<span class="op">=</span><span class="st">&quot;RdBu_r&quot;</span>,</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    show_guide<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>    norm<span class="op">=</span>co.plotting.MidpointNormalize(vmin<span class="op">=-</span><span class="dv">2</span>, midpoint<span class="op">=</span><span class="dv">0</span>, vmax<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="output display_data">
+<p><img src="5135dbf0f565edb8ad6cc5feeca112d2002da568.png" /></p>
+</div>
+</div>
+<section id="p-values" class="cell markdown">
+<h4>P-values</h4>
+</section>
+<div class="cell markdown">
+<p>To confirm the trends we see in the log-odds plot, let's visualize the p-values. One helpful visualization is a heatmap of <code>-np.sign(cluster_overlap_stats.log_odds_ratio) * np.log10(q_values)</code></p>
+</div>
+<div class="cell code" data-execution_count="18">
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>fig, ax <span class="op">=</span> plt.subplots(<span class="dv">1</span>, <span class="dv">1</span>)</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>_ <span class="op">=</span> co.heatmap(</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    df<span class="op">=-</span>np.sign(cluster_overlap_stats.log_odds_ratio) <span class="op">*</span> np.log10(q_values),</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    ax<span class="op">=</span>ax,</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>    xticklabels<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>    yticklabels<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    yticklabel_side<span class="op">=</span><span class="st">&#39;left&#39;</span>,</span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    cmap<span class="op">=</span><span class="st">&quot;RdBu_r&quot;</span>,</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    show_guide<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    norm<span class="op">=</span>co.plotting.MidpointNormalize(vmin<span class="op">=-</span><span class="dv">2</span>, midpoint<span class="op">=</span><span class="dv">0</span>, vmax<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="output display_data">
+<p><img src="4d966507f66687ebdf93319ad2b3348ed15ef870.png" /></p>
+</div>
+</div>
+<div class="cell markdown">
+<p>We have winners - this toy example clearly provided DMRs in proximity (or covering) genes from B cell, HSC and Neutrophil marker genesets. We can distinguish them from CFU-E and Monocyte genesets - but we can also see that there is some overlap between the CFU-E and HSC, and the Neutrophil and Monocyte annotations. Next we might want to check whether that is due to overlap between the genesets, or due to the presence of different genesets within our DMR clusters - but that's beyond the basic usage we wanted to introduce here :)</p>
+</div>
