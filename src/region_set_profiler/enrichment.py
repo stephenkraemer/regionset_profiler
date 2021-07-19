@@ -137,9 +137,9 @@ class OverlapStats(OverlapStatsABC):
             metadata_table = pd.read_csv(metadata_table, sep="\t", header=0)
             metadata_table.set_index("name", drop=False, inplace=True)
         if isinstance(metadata_table, pd.DataFrame):
-            assert metadata_table.columns.contains("name")
+            assert 'name' in metadata_table.columns
             assert metadata_table.index.to_series().equals(metadata_table["name"])
-            assert metadata_table.columns.contains("abspath")
+            assert "abspath" in metadata_table.columns
         self.metadata_table = metadata_table
         if metadata_table is not None:
             self.bed_files = metadata_table["abspath"].tolist()
