@@ -463,7 +463,7 @@ def new_barcode_heatmap(
     pvalues: pd.DataFrame,
     pvalue_threshold: float,
     directional_effect_size: pd.DataFrame,
-    pcolormesh_kwargs: Optional[Dict] = None,
+    heatmap_kwargs: Optional[Dict] = None,
     width_per_col: Optional[float] = None,
     height_per_row: Optional[float] = None,
     vmin: Optional[float] = None,
@@ -507,8 +507,8 @@ def new_barcode_heatmap(
         - size computation currently does not take dendrogram size into account,
           it is only correct if no dendrograms are displayed. Same problem with spacers.
     """
-    if pcolormesh_kwargs is None:
-        pcolormesh_kwargs = dict(edgecolor="white", linewidth=0.1)
+    if heatmap_kwargs is None:
+        heatmap_kwargs = dict(edgecolor="white", linewidth=0.1)
     if row_linkage is None:
         row_linkage = dict(method="average", metric="euclidean")
 
@@ -543,10 +543,9 @@ def new_barcode_heatmap(
                 df=plot_stat_t,
                 xticklabels=True,
                 yticklabels=True,
-                cmap="RdBu_r",
                 rasterized=True,
                 norm=MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0),
-                **pcolormesh_kwargs,
+                **heatmap_kwargs,
             )
         ],
         pads_around_center=[(0.2 / 2.54, "abs")],
@@ -561,6 +560,7 @@ def new_barcode_heatmap(
         row_spacer_sizes=0.02,
         col_spacing_group_ids=col_spacing_group_ids,
         col_spacer_sizes=0.02,
+        legend_size=(0.05, 'rel'),
     )
 
     return array_to_figure_res["fig"]
