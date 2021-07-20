@@ -482,6 +482,7 @@ def new_barcode_heatmap(
 
     Heatmap body is rasterized (hardcoded)
 
+
     Args:
         pvalues: df of pvalues, group // motif
         pvalue_threshold: float
@@ -505,9 +506,10 @@ def new_barcode_heatmap(
     Returns:
         heatmap figure
 
-    Notes:
+    Notes / known issues:
         - size computation currently does not take dendrogram size into account,
           it is only correct if no dendrograms are displayed. Same problem with spacers.
+        - currently puts some margins around the figure (uses co.cross_plot)
     """
     if heatmap_kwargs is None:
         heatmap_kwargs = dict(edgecolor="white", linewidth=0.1)
