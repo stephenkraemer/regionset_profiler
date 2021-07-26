@@ -73,22 +73,45 @@ def compute_enrichment(fgs_ser, coverage_df) -> EnrichmentResult:
 
 
 def _compute_fg_bg_freqs(fgs_ser, coverage_df) -> pd.DataFrame:
+    """
 
-    # fg_bg_freqs_df: DF set_name db_name // fg_in_db fg_not_db bg_in_db bg_not_db
-    # fgs_ser : Ser name-query_label [name-query_label ...] // pd.Index[region_ids]
-    # coverage_df : DF region_id // db1 db2 ...
+    Parameters
+    ----------
+    fgs_ser
+        Ser fgs_index_level0 [fgs_index_level1] // pd.Index/array/list[region_ids]
+        eg: cluster1 -> [1, 5, 6], cluster2 -> [4, 2, 0] ...
+        or  (cluster1, subgroup1) -> [1, 5], (cluster1, subgroup2) -> ..., (cluster2, subgroup1) -> ...
+    coverage_df
+        DF region_id // db1 db2 ...
+        coverage_df may contain more regions than those referred to in fgs_ser
+
+    Returns
+    -------
+    fg_bg_freqs_df
+        DF fgs_index_level0 [fgs_index_level1] db_name // fg_in_db fg_not_db bg_in_db bg_not_db
+        dtypes of fgs_index_level{0,1,...} and db_name (coverage_df.columns.dtype) are maintained
+
+    """
+
+
+    # find subset of features in coverage_df which is used as universe for the test
+    all_universe_index = pd.Index(np.concatenate(fgs_ser))
+    # assert that concatneation worked
+    assert fgs_ser.map(len).sum() == len(all_universe_index)
+    # assert that fgs are mutually exclusive
+    assert np.unique(all_universe_index).shape[0] == len(all_universe_index)
 
     # Dict set_name // fg_bg_df
     fg_bg_dfs_d = {}
     for fgs_name, fgs_region_index in fgs_ser.iteritems():
         curr_fg_bg_df = pd.DataFrame(
             0,
-            index=coverage_df.columns,
+            index=coverage_df.columns,  # db1, db2, ...
             columns=["fg_in_db", "fg_not_db", "bg_in_db", "bg_not_db"],
             dtype="i8",
         )
         curr_fg_bg_df.index.name = "db_set"
-        bgs_region_index = coverage_df.index.difference(fgs_region_index)
+        bgs_region_index = all_universe_index.difference(fgs_region_index)
         curr_fg_bg_df["fg_in_db"] = coverage_df.loc[fgs_region_index].sum()
         curr_fg_bg_df["fg_not_db"] = len(fgs_region_index) - curr_fg_bg_df["fg_in_db"]
         curr_fg_bg_df["bg_in_db"] = coverage_df.loc[bgs_region_index].sum()
@@ -102,14 +125,14 @@ def _compute_fg_bg_freqs(fgs_ser, coverage_df) -> pd.DataFrame:
     dtypes = [
         fgs_ser.index.get_level_values(i).dtype for i in range(fgs_ser.index.nlevels)
     ] + [coverage_df.columns.dtype]
-    fg_bg_freqs_df.index = pd.MultiIndex.from_arrays(
+    fg_bg_freqs_df.index = pd.MultiIndex.from_arrays(  # type: ignore
         [
             fg_bg_freqs_df.index.get_level_values(i).astype(dtypes[i])
             for i in range(fg_bg_freqs_df.index.nlevels)
         ]
     )
 
-    return fg_bg_freqs_df
+    return fg_bg_freqs_df  # type: ignore
 
 
 def _fisher_tests(fg_bg_freqs_df: pd.DataFrame) -> pd.DataFrame:

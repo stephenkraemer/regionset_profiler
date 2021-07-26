@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import re
 from typing import Optional, Tuple, Dict
+import matplotlib.pyplot as plt
 
 from matplotlib.figure import Figure
 import matplotlib as mpl
@@ -477,6 +478,7 @@ def new_barcode_heatmap(
     col_dendrogram=None,
     row_spacing_group_ids=None,
     col_spacing_group_ids=None,
+    legend_size=(0.05, "rel"),
 ) -> Figure:
     """Visualize depletions and enrichments by combining p-values with a signed effect size stat
 
@@ -543,38 +545,67 @@ def new_barcode_heatmap(
     elif vmax_quantile is not None:
         vmax = np.percentile(plot_stat_t.to_numpy(), vmax_quantile * 100)
 
-    # plot standard heatmap, no dendrogram
-    array_to_figure_res, plot_arr = co.cross_plot(
-        center_plots=[
-            dict(
-                df=plot_stat_t,
-                xticklabels=True,
-                yticklabels=True,
-                rasterized=True,
-                norm=MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0),
-                **heatmap_kwargs,
-            )
-        ],
-        pads_around_center=[(0.2 / 2.54, "abs")],
-        figsize=figsize_t,
-        constrained_layout=True,
-        layout_pads=dict(wspace=0, hspace=0, h_pad=0, w_pad=0),
-        row_linkage=row_linkage,
-        col_linkage=col_linkage,
-        row_dendrogram=row_dendrogram,
-        col_dendrogram=col_dendrogram,
-        row_spacing_group_ids=row_spacing_group_ids,
-        row_spacer_sizes=0.02,
-        col_spacing_group_ids=col_spacing_group_ids,
-        col_spacer_sizes=0.02,
-        legend_size=(0.05, 'rel'),
-        legend_args=dict(
-            cbar_title_as_label=True,
-            # ypad_in=ypad_in,
-        ),
-    )
+    if (
+        (row_linkage is not None)
+        or (col_linkage is not None)
+        or (row_dendrogram is not None)
+        or (col_dendrogram is not None)
+    ):
 
-    return array_to_figure_res["fig"]
+        print("using cross plot")
+
+        # plot standard heatmap, no dendrogram
+        array_to_figure_res, plot_arr = co.cross_plot(
+            center_plots=[
+                dict(
+                    df=plot_stat_t,
+                    xticklabels=True,
+                    yticklabels=True,
+                    rasterized=True,
+                    norm=MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0),
+                    **heatmap_kwargs,
+                )
+            ],
+            pads_around_center=[(0.2 / 2.54, "abs")],
+            figsize=figsize_t,
+            constrained_layout=True,
+            layout_pads=dict(wspace=0, hspace=0, h_pad=0, w_pad=0),
+            row_linkage=row_linkage,
+            col_linkage=col_linkage,
+            row_dendrogram=row_dendrogram,
+            col_dendrogram=col_dendrogram,
+            row_spacing_group_ids=row_spacing_group_ids,
+            row_spacer_sizes=0.02,
+            col_spacing_group_ids=col_spacing_group_ids,
+            col_spacer_sizes=0.02,
+            legend_size=legend_size,
+            legend_args=dict(
+                cbar_title_as_label=True,
+                # ypad_in=ypad_in,
+            ),
+        )
+
+        return array_to_figure_res["fig"]
+
+    else:
+        print("using standard heatmap")
+        fig, ax = plt.subplots(
+            1, 1, constrained_layout=True, figsize=figsize_t, dpi=180
+        )
+        fig.set_constrained_layout_pads(wspace=0, hspace=0, h_pad=0, w_pad=0)
+        co.heatmap(
+            ax=ax,
+            df=plot_stat_t,
+            xticklabels=True,
+            yticklabels=True,
+            rasterized=True,
+            norm=MidpointNormalize(vmin=vmin, vmax=vmax, vcenter=0),
+            row_spacing_group_ids=row_spacing_group_ids,
+            row_spacer_sizes=0.02,
+            col_spacing_group_ids=col_spacing_group_ids,
+            col_spacer_sizes=0.02,
+            **heatmap_kwargs,
+        )
 
 
 def _get_barcode_fig_height_width(
@@ -614,3 +645,16 @@ def _get_barcode_fig_height_width(
     width = row_label_width + (plot_stat_t.shape[1] * width_per_col)
 
     return width, height
+
+
+def get_signed_pvalues_plot_df(
+    pvalues_df, directional_effect_size_df, pvalue_threshold_le
+):
+    # add pseudocount to pvalues and use sign from directional_effect_size
+    plot_stat = np.log10(pvalues_df + 1e-100) * -np.sign(directional_effect_size_df)
+    plot_stat = plot_stat.loc[:, pvalues_df.le(pvalue_threshold_le).any(axis=0)]
+    # transpose prior to plotting
+    plot_stat_t = plot_stat.T
+    # co.heatmap does not work with integer columns index
+    plot_stat_t.columns = plot_stat_t.columns.astype(str)
+    return plot_stat_t

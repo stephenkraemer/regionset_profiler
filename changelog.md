@@ -1,0 +1,4 @@
+- fix /home/stephen/projects/region_set_profiler/src/region_set_profiler/enrichment_new_api.py _compute_fg_bg_freqs
+  - use correct background universe in all cases
+- fix cluster size computation in /home/stephen/projects/mouse_hema_meth/mouse_hema_meth/enrichments/geneset_enrichments_lib.py compute_geneset_enrichment_stats(
+- new_barcode_heatmap: use co.heatmap if possible, easier spacing, cbar size handling etc.
