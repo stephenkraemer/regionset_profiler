@@ -24,14 +24,26 @@ class EnrichmentResult:
     log10_qvalues: pd.DataFrame
 
 
-def compute_geneset_coverage_df(gene_anno, genesets_ser) -> pd.DataFrame:
+def compute_geneset_coverage_df(gene_anno, genesets_ser, region_id_col) -> pd.DataFrame:
+    """
 
-    # gene_anno : DF region_id // gene_name [anno1, anno2, ...]
+    Parameters
+    ----------
+    gene_anno : DF // gene_name [region_id_col] [other1, other2, ...]
+    region_id_col
+        necessary if the same region can have multiple gene annotations,
+        and is thus present on multiple rows.
+        Set to None otherwise
+    """
+
     # genesets_ser : Ser name // np.ndarray[str]
 
     coverage_ser_d = {}
     for geneset_name, geneset_genes_arr in genesets_ser.iteritems():
-        coverage_ser_d[geneset_name] = gene_anno["gene_name"].isin(geneset_genes_arr)
+        region_is_hit = gene_anno["gene_name"].isin(geneset_genes_arr)
+        if region_id_col is not None:
+            region_is_hit = region_is_hit.groupby(gene_anno[region_id_col]).any()
+        coverage_ser_d[geneset_name] = region_is_hit
     # coverage_df : DF region_id // db1 db2 ...
     coverage_df = pd.DataFrame(coverage_ser_d)
 
