@@ -39,7 +39,7 @@ def compute_geneset_coverage_df(gene_anno, genesets_ser, region_id_col) -> pd.Da
     # genesets_ser : Ser name // np.ndarray[str]
 
     coverage_ser_d = {}
-    for geneset_name, geneset_genes_arr in genesets_ser.iteritems():
+    for geneset_name, geneset_genes_arr in genesets_ser.items():
         region_is_hit = gene_anno["gene_name"].isin(geneset_genes_arr)
         if region_id_col is not None:
             region_is_hit = region_is_hit.groupby(gene_anno[region_id_col]).any()
@@ -115,7 +115,7 @@ def _compute_fg_bg_freqs(fgs_ser, coverage_df) -> pd.DataFrame:
 
     # Dict set_name // fg_bg_df
     fg_bg_dfs_d = {}
-    for fgs_name, fgs_region_index in fgs_ser.iteritems():
+    for fgs_name, fgs_region_index in fgs_ser.items():
         curr_fg_bg_df = pd.DataFrame(
             0,
             index=coverage_df.columns,  # db1, db2, ...
