@@ -1,5 +1,8 @@
 from typing import Literal, Optional
 
+from scipy.stats.contingency import expected_freq
+from scipy.stats import chi2_contingency
+from joblib import Parallel, delayed
 from attr import attrs
 import numpy as np
 import pandas as pd
@@ -50,11 +53,15 @@ def compute_geneset_coverage_df(gene_anno, genesets_ser, region_id_col) -> pd.Da
     return coverage_df
 
 
-def compute_enrichment(fgs_ser, coverage_df) -> EnrichmentResult:
+def compute_enrichment(
+    fgs_ser, coverage_df, n_cores=1, apply_cochrans_rule=False
+) -> EnrichmentResult:
 
     # fg_bg_freqs_df: DF fgset_name1 [fgset_name2 ...] db_name // fg_in_db fg_not_db bg_in_db bg_not_db
     fg_bg_freqs_df = _compute_fg_bg_freqs(fgs_ser, coverage_df)
-    p_value_df = _fisher_tests(fg_bg_freqs_df)
+    p_value_df = _fisher_tests(
+        fg_bg_freqs_df, n_cores=n_cores, apply_cochrans_rule=apply_cochrans_rule
+    )
 
     # noinspection PyUnresolvedReferences,PyArgumentList
     assert not p_value_df.isnull().any().any()
@@ -105,7 +112,6 @@ def _compute_fg_bg_freqs(fgs_ser, coverage_df) -> pd.DataFrame:
 
     """
 
-
     # find subset of features in coverage_df which is used as universe for the test
     all_universe_index = pd.Index(np.concatenate(fgs_ser))
     # assert that concatneation worked
@@ -147,7 +153,9 @@ def _compute_fg_bg_freqs(fgs_ser, coverage_df) -> pd.DataFrame:
     return fg_bg_freqs_df  # type: ignore
 
 
-def _fisher_tests(fg_bg_freqs_df: pd.DataFrame) -> pd.DataFrame:
+def _fisher_tests(
+    fg_bg_freqs_df: pd.DataFrame, n_cores, apply_cochrans_rule
+) -> pd.DataFrame:
     """
     from scipy.stats import chi2_contingency, fisher_exact
     from scipy.stats.contingency import expected_freq
@@ -175,21 +183,42 @@ def _fisher_tests(fg_bg_freqs_df: pd.DataFrame) -> pd.DataFrame:
     """
 
     # fg_bg_freqs_df: DF fgset_name1 [fgset_name2 ...] db_name // fg_in_db fg_not_db bg_in_db bg_not_db
-    p_values = pd.Series(index=fg_bg_freqs_df.index, dtype="f8")
-    for int_row_index, (row_label_t, freqs_ser) in enumerate(fg_bg_freqs_df.iterrows()):
-        unused_odds_ratio, pvalue = scipy.stats.fisher_exact(
-            [
-                [freqs_ser["fg_in_db"], freqs_ser["fg_not_db"]],
-                [freqs_ser["bg_in_db"], freqs_ser["bg_not_db"]],
-            ],
-            alternative="two-sided",
+
+    p_values_l = Parallel(n_cores, backend='multiprocessing', batch_size="auto")(
+        delayed(hybrid_compute_fisher_chisquare)(
+            freqs_ser=freqs_ser, apply_cochrans_rule=apply_cochrans_rule
         )
-        p_values.iloc[int_row_index] = pvalue
+        for _, freqs_ser in fg_bg_freqs_df.iterrows()
+    )
+
+    p_values = pd.Series(p_values_l, index=fg_bg_freqs_df.index, dtype="f8")
 
     # p_value_df: DF fgset_name1 [fgset_name2 ...] // db_name-
     p_value_df = p_values.unstack(level=-1)
 
     return p_value_df
+
+
+def hybrid_compute_fisher_chisquare(freqs_ser, apply_cochrans_rule):
+    cont_table = [
+        [freqs_ser["fg_in_db"], freqs_ser["fg_not_db"]],
+        [freqs_ser["bg_in_db"], freqs_ser["bg_not_db"]],
+    ]
+
+    if apply_cochrans_rule:
+
+        expected = expected_freq(cont_table)
+        emin = (np.round(expected) >= 1).all()
+        perc_expected = ((expected > 5).sum() / expected.size) > 0.8
+        if emin and perc_expected:
+            pvalue = chi2_contingency(cont_table)[1] + 1e-100
+            return pvalue
+
+    pvalue = scipy.stats.fisher_exact(
+        cont_table,
+        alternative="two-sided",
+    )[1]
+    return pvalue
 
 
 def _compute_log_odds(fg_bg_freqs_df: pd.DataFrame) -> pd.DataFrame:
