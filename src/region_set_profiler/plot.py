@@ -63,7 +63,7 @@ class MidpointNormalize(colors.Normalize):
 
 
 def barcode_heatmap(
-    cluster_overlap_stats: rsp.ClusterOverlapStats,
+    cluster_overlap_stats,
     plot_stat="p-value",
     vmin=None,
     vmax=None,

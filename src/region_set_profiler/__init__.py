@@ -1,5 +1,5 @@
-import .enrichment_new_api
-import .tf_affinity_enrichment
+from . import enrichment_new_api
+from . import tf_affinity_enrichment
 from .enrichment import ClusterOverlapStats, OverlapStats, GenesetOverlapStats
 from .plot import barcode_heatmap
 from .tf_affinity_enrichment import (

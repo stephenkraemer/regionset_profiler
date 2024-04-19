@@ -113,7 +113,7 @@ def _compute_fg_bg_freqs(fgs_ser, coverage_df) -> pd.DataFrame:
     """
 
     # find subset of features in coverage_df which is used as universe for the test
-    all_universe_index = pd.Index(np.concatenate(fgs_ser))
+    all_universe_index = pd.Index(np.concatenate(fgs_ser.tolist()))
     # assert that concatneation worked
     assert fgs_ser.map(len).sum() == len(all_universe_index)
     # assert that fgs are mutually exclusive
