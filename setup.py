@@ -11,7 +11,7 @@ setup(
         python_requires='>=3.8',
         install_requires=[
             'attrs',
-            'codaplot',
+            'codaplot @ git+https://github.com/stephenkraemer/codaplot',
             'joblib',
             'matplotlib',
             'more_itertools',
